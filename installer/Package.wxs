@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Rexyra installer: the program in a folder of the user's choice, a
+  configuration file with the port of the user's choice, and a Windows
+  service that runs the one with the other.
+
+  Built with WiX 5 by build.ps1, which supplies:
+    Version   the product version, x.y.z
+    Server    the path of rexyra-server.exe
+    Root      the root of the repository, for the documentation
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="Rexyra"
+           Manufacturer="The Rexyra Authors"
+           Version="$(var.Version)"
+           UpgradeCode="9673F12F-5926-4D5E-9AF0-4259CB56E50A"
+           Scope="perMachine">
+
+    <SummaryInformation Description="Rexyra, a Redis-compatible in-memory data server for Windows" />
+
+    <!-- A newer version replaces an older one; the settings and the data
+         are not part of the package and stay where they are. -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/moznhub/rexyra" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/moznhub/rexyra/blob/main/docs/WINDOWS-SERVICE.md" />
+
+    <!-- The port to listen on: asked for by setup, or PORT=... on the
+         msiexec command line. It goes into the configuration file when
+         that is first written; afterwards the file is what counts. -->
+    <Property Id="PORT" Value="6379" Secure="yes" />
+    <Launch Condition="Installed OR (PORT &gt;= 1 AND PORT &lt;= 65535)"
+            Message="PORT must be a number between 1 and 65535." />
+
+    <!-- An upgrade goes where the version before it was installed, unless
+         told otherwise on the command line. -->
+    <Property Id="PREVIOUSFOLDER" Secure="yes">
+      <RegistrySearch Id="FindPreviousFolder" Root="HKLM" Key="SOFTWARE\Rexyra"
+                      Name="InstallFolder" Type="raw" />
+    </Property>
+    <SetProperty Id="INSTALLFOLDER" Value="[PREVIOUSFOLDER]" After="AppSearch" Sequence="first"
+                 Condition="PREVIOUSFOLDER AND NOT INSTALLFOLDER" />
+
+    <!-- Set when there is a configuration file already: setup then has no
+         port to ask for. -->
+    <Property Id="EXISTINGCONFIG" Secure="yes">
+      <DirectorySearch Id="FindDataFolder" Path="[CommonAppDataFolder]Rexyra" Depth="0">
+        <FileSearch Id="FindConfig" Name="rexyra.conf" />
+      </DirectorySearch>
+    </Property>
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Rexyra" />
+    </StandardDirectory>
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="DATAFOLDER" Name="Rexyra">
+        <Directory Id="DATADIR" Name="data" />
+        <Directory Id="LOGDIR" Name="logs" />
+      </Directory>
+    </StandardDirectory>
+
+    <ui:WixUI Id="RexyraUI" InstallDirectory="INSTALLFOLDER" />
+
+    <Feature Id="Main" Title="Rexyra" Level="1">
+      <ComponentGroupRef Id="Program" />
+      <ComponentGroupRef Id="Data" />
+    </Feature>
+
+    <!-- Writes the configuration file, by asking the program itself. It
+         leaves a file that is already there alone, so this is safe to run
+         on an upgrade and a repair too. -->
+    <SetProperty Id="CreateConfig"
+                 Value="&quot;[#ServerExe]&quot; --create-config &quot;[DATAFOLDER]rexyra.conf&quot; --port [PORT] --dir &quot;[DATAFOLDER]data&quot; --logfile &quot;[DATAFOLDER]logs\rexyra.log&quot;"
+                 Before="CreateConfig" Sequence="execute" />
+    <CustomAction Id="CreateConfig"
+                  BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="no" Return="check" />
+    <InstallExecuteSequence>
+      <Custom Action="CreateConfig" Before="StartServices" Condition="NOT REMOVE~=&quot;ALL&quot;" />
+    </InstallExecuteSequence>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="Program" Directory="INSTALLFOLDER">
+      <Component Id="Server">
+        <File Id="ServerExe" Source="$(var.Server)" Name="rexyra-server.exe" KeyPath="yes" />
+
+        <!-- LocalService: an account with few rights and no password. -->
+        <ServiceInstall Id="InstallService"
+                        Name="Rexyra"
+                        DisplayName="Rexyra"
+                        Description="Rexyra in-memory data server (Redis-compatible)"
+                        Type="ownProcess"
+                        Start="auto"
+                        ErrorControl="normal"
+                        Account="NT AUTHORITY\LocalService"
+                        Arguments="--service &quot;[DATAFOLDER]rexyra.conf&quot;"
+                        Vital="yes">
+          <!-- Brought back after a crash; a clean stop is left alone. -->
+          <util:ServiceConfig FirstFailureActionType="restart"
+                              SecondFailureActionType="restart"
+                              ThirdFailureActionType="restart"
+                              RestartServiceDelayInSeconds="5"
+                              ResetPeriodInDays="1" />
+        </ServiceInstall>
+        <ServiceControl Id="ControlService" Name="Rexyra"
+                        Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+      </Component>
+
+      <Component Id="RememberFolder">
+        <RegistryValue Root="HKLM" Key="SOFTWARE\Rexyra" Name="InstallFolder" Type="string"
+                       Value="[INSTALLFOLDER]" KeyPath="yes" />
+      </Component>
+
+      <Component Id="Readme">
+        <File Source="$(var.Root)\README.md" KeyPath="yes" />
+      </Component>
+      <Component Id="Changelog">
+        <File Source="$(var.Root)\CHANGELOG.md" KeyPath="yes" />
+      </Component>
+      <Component Id="ServiceGuide">
+        <File Source="$(var.Root)\docs\WINDOWS-SERVICE.md" KeyPath="yes" />
+      </Component>
+      <Component Id="Compatibility">
+        <File Source="$(var.Root)\docs\COMPATIBILITY.md" KeyPath="yes" />
+      </Component>
+      <Component Id="LicenceMit">
+        <File Source="$(var.Root)\LICENSE-MIT" KeyPath="yes" />
+      </Component>
+      <Component Id="LicenceApache">
+        <File Source="$(var.Root)\LICENSE-APACHE" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <Fragment>
+    <!-- Where the settings, the data and the log live. Removing the program
+         removes these folders only if they are empty, so the data stays. -->
+    <ComponentGroup Id="Data">
+      <Component Id="DataFolder" Directory="DATAFOLDER" Guid="6B1B7D0E-0F1D-4C8B-9D53-5C1B3E2A7F41">
+        <CreateFolder>
+          <!-- "Modify" for the service's account, here and below. -->
+          <util:PermissionEx User="LocalService"
+                             Read="yes" CreateFile="yes" CreateChild="yes"
+                             ReadExtendedAttributes="yes" WriteExtendedAttributes="yes"
+                             Traverse="yes" DeleteChild="yes"
+                             ReadAttributes="yes" WriteAttributes="yes"
+                             Delete="yes" ReadPermission="yes" Synchronize="yes" />
+        </CreateFolder>
+      </Component>
+      <Component Id="DataDir" Directory="DATADIR" Guid="2E0C3B55-7C0A-4F0E-B5A5-0B8B9A0F6D12">
+        <CreateFolder />
+      </Component>
+      <Component Id="LogDir" Directory="LOGDIR" Guid="A4D0C6F3-51B2-4E2C-8B0E-3F6D7C9E1A58">
+        <CreateFolder />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

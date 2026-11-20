@@ -13,10 +13,27 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$failures = 0
+$failed = [System.Collections.Generic.List[string]]::new()
 
 function Check([string] $what, [bool] $ok, [string] $detail = '') {
-    if ($ok) { Write-Host "ok    $what" } else { Write-Host "FAIL  $what  $detail"; $script:failures++ }
+    if ($ok) {
+        Write-Host "ok    $what"
+    } else {
+        Write-Host "FAIL  $what  $detail"
+        $script:failed.Add("FAIL  $what  $detail")
+    }
+}
+
+# What went wrong, for the end of the output and, on GitHub Actions, as an
+# annotation on the run.
+function Write-Report([string[]] $lines) {
+    $lines | Write-Host
+    if ($env:GITHUB_ACTIONS) {
+        $text = ($lines -join "`n")
+        if ($text.Length -gt 60000) { $text = $text.Substring(0, 60000) }
+        $text = $text.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+        Write-Host "::error title=Service checks failed::$text"
+    }
 }
 
 function Send-Command([string] $command) {
@@ -90,14 +107,16 @@ try {
     Check 'sc.exe delete succeeded' ($LASTEXITCODE -eq 0) "exit code $LASTEXITCODE"
 } catch {
     Write-Host "FAIL  $_"
-    $failures++
+    $failed.Add("FAIL  $_")
 }
 
-if ($failures -gt 0) {
-    Get-CimInstance Win32_Service -Filter "Name='Rexyra'" | Format-List Name, State, StartName, PathName, ExitCode, ServiceSpecificExitCode | Out-String | Write-Host
+if ($failed.Count -gt 0) {
+    $report = @($failed)
+    $report += (Get-CimInstance Win32_Service -Filter "Name='Rexyra'" | Format-List Name, State, StartName, PathName, ExitCode, ServiceSpecificExitCode | Out-String).Trim()
     foreach ($file in 'C:\Rexyra\rexyra.conf', 'C:\Rexyra\logs\rexyra.log', 'C:\Rexyra\rexyra-startup-error.txt') {
-        if (Test-Path $file) { Write-Host "--- $file"; Get-Content $file | Write-Host }
+        if (Test-Path $file) { $report += "--- $file"; $report += Get-Content $file | Where-Object { $_ -notmatch '^\s*(#|$)' } }
     }
-    throw "$failures check(s) failed"
+    Write-Report $report
+    throw "$($failed.Count) check(s) failed"
 }
 Write-Host 'All checks of the manual set-up passed.'

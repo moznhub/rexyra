@@ -6,37 +6,52 @@
     Meant for a throwaway machine such as a CI runner: it installs a Windows
     service and needs an elevated prompt. It checks that the service runs
     under the account and on the port asked for, that data survives a
-    restart of the service, that an existing configuration file is kept by a
-    reinstall, and that uninstalling removes the service and the program but
-    leaves the data.
+    restart of the service, that an upgrade keeps the folder, the settings
+    and the data, and that uninstalling removes the service and the program
+    but leaves the data.
 #>
 param(
+    # The installer under test, and one of an earlier version to upgrade from.
     [Parameter(Mandatory)] [string] $Msi,
+    [Parameter(Mandatory)] [string] $OldMsi,
     [int] $Port = 6400,
     [string] $InstallFolder = 'C:\Rexyra Test\Program'
 )
 
 $ErrorActionPreference = 'Stop'
 $Msi = (Resolve-Path $Msi).Path
+$OldMsi = (Resolve-Path $OldMsi).Path
 $dataFolder = Join-Path $env:ProgramData 'Rexyra'
 $config = Join-Path $dataFolder 'rexyra.conf'
-$failures = 0
+$failed = [System.Collections.Generic.List[string]]::new()
 
 function Check([string] $what, [bool] $ok, [string] $detail = '') {
     if ($ok) {
         Write-Host "ok    $what"
     } else {
         Write-Host "FAIL  $what  $detail"
-        $script:failures++
+        $script:failed.Add("FAIL  $what  $detail")
+    }
+}
+
+# What went wrong, for the end of the output and, on GitHub Actions, as an
+# annotation on the run.
+function Write-Report([string[]] $lines) {
+    $lines | Write-Host
+    if ($env:GITHUB_ACTIONS) {
+        $text = ($lines -join "`n")
+        if ($text.Length -gt 60000) { $text = $text.Substring(0, 60000) }
+        $text = $text.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+        Write-Host "::error title=Service checks failed::$text"
     }
 }
 
 function Invoke-Msi([string[]] $arguments, [string] $log) {
     $process = Start-Process msiexec.exe -ArgumentList ($arguments + @('/qn', '/norestart', '/l*v', $log)) -Wait -PassThru
     if ($process.ExitCode -ne 0) {
-        Write-Host "msiexec $($arguments -join ' ') exited with $($process.ExitCode); the end of its log:"
-        Get-Content $log -Tail 120 | Write-Host
-        throw "msiexec failed"
+        # The lines that say why, rather than the thousands that do not.
+        $why = Get-Content $log | Select-String -Pattern 'Return value 3|Error \d+|error|failed' -Context 2, 1 | Select-Object -First 25 | Out-String
+        throw "msiexec $($arguments -join ' ') exited with $($process.ExitCode):`n$why"
     }
 }
 
@@ -67,19 +82,20 @@ function Wait-ForServer {
     $false
 }
 
-function Show-Diagnostics {
-    Write-Host '--- service'
-    Get-CimInstance Win32_Service -Filter "Name='Rexyra'" | Format-List Name, State, StartMode, StartName, PathName, ExitCode, ServiceSpecificExitCode | Out-String | Write-Host
-    Write-Host "--- $dataFolder"
-    Get-ChildItem $dataFolder -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName } | Write-Host
+function Get-Diagnostics {
+    '--- service'
+    (Get-CimInstance Win32_Service -Filter "Name='Rexyra'" | Format-List Name, State, StartMode, StartName, PathName, ExitCode, ServiceSpecificExitCode | Out-String).Trim()
+    "--- $dataFolder"
+    Get-ChildItem $dataFolder -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
+    (icacls $dataFolder 2>&1 | Out-String).Trim()
     foreach ($file in @($config, (Join-Path $dataFolder 'logs\rexyra.log'), (Join-Path $dataFolder 'rexyra-startup-error.txt'))) {
-        if (Test-Path $file) { Write-Host "--- $file"; Get-Content $file | Write-Host }
+        if (Test-Path $file) { "--- $file"; Get-Content $file | Where-Object { $_ -notmatch '^\s*(#|$)' } }
     }
 }
 
 try {
-    Write-Host "== install to '$InstallFolder' on port $Port"
-    Invoke-Msi @('/i', "`"$Msi`"", "PORT=$Port", "INSTALLFOLDER=`"$InstallFolder`"") 'install.log'
+    Write-Host "== install the earlier version to '$InstallFolder' on port $Port"
+    Invoke-Msi @('/i', "`"$OldMsi`"", "PORT=$Port", "INSTALLFOLDER=`"$InstallFolder`"") 'install.log'
 
     $service = Get-CimInstance Win32_Service -Filter "Name='Rexyra'"
     Check 'the service is installed' ($null -ne $service)
@@ -87,6 +103,7 @@ try {
     Check 'it starts automatically' ($service.StartMode -eq 'Auto') $service.StartMode
     Check 'it runs as LocalService' ($service.StartName -match 'Local\s?Service') $service.StartName
     Check 'it runs the installed program in service mode' ($service.PathName -like "*$InstallFolder\rexyra-server.exe*--service*") $service.PathName
+    Check 'it is restarted after a crash' ((sc.exe qfailure Rexyra | Out-String) -match 'RESTART') (sc.exe qfailure Rexyra | Out-String)
     Check 'the program is in the chosen folder' (Test-Path (Join-Path $InstallFolder 'rexyra-server.exe'))
     Check 'the configuration file was written' (Test-Path $config)
     Check 'it holds the chosen port' ((Get-Content $config -ErrorAction SilentlyContinue) -contains "port $Port")
@@ -120,10 +137,16 @@ try {
     Check 'it starts again once the file is put right' (Wait-ForServer)
     Check 'and the note is removed' (-not (Test-Path $errorFile))
 
-    Write-Host '== install again over it, asking for another port'
-    Invoke-Msi @('/i', "`"$Msi`"", 'PORT=6999', "INSTALLFOLDER=`"$InstallFolder`"") 'reinstall.log'
-    Check 'the existing configuration file is kept' ((Get-Content $config) -contains "port $Port")
-    Check 'the server still answers on its port' (Wait-ForServer)
+    Write-Host '== upgrade, naming neither the folder nor the port'
+    Invoke-Msi @('/i', "`"$Msi`"") 'upgrade.log'
+    $installed = @(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' | Where-Object { $_.DisplayName -eq 'Rexyra' })
+    Check 'one version is installed afterwards' ($installed.Count -eq 1) "$($installed.Count)"
+    Check 'and it is not the earlier one' ($installed[0].DisplayVersion -ne '0.0.1') $installed[0].DisplayVersion
+    $service = Get-CimInstance Win32_Service -Filter "Name='Rexyra'"
+    Check 'the program stays in the folder chosen before' ($service.PathName -like "*$InstallFolder\rexyra-server.exe*") $service.PathName
+    Check 'the service is running' ($service.State -eq 'Running') $service.State
+    Check 'the configuration file is kept' ((Get-Content $config) -contains "port $Port")
+    Check 'the server answers on its port' (Wait-ForServer)
     Check 'with its data' ((Send-Commands 'GET installer:check') -eq 'kept')
 
     Write-Host '== uninstall'
@@ -134,11 +157,11 @@ try {
     Check 'and so is the configuration' (Test-Path $config)
 } catch {
     Write-Host "FAIL  $_"
-    $failures++
+    $failed.Add("FAIL  $_")
 }
 
-if ($failures -gt 0) {
-    Show-Diagnostics
-    throw "$failures check(s) failed"
+if ($failed.Count -gt 0) {
+    Write-Report (@($failed) + @(Get-Diagnostics))
+    throw "$($failed.Count) check(s) failed"
 }
 Write-Host 'All installer checks passed.'
