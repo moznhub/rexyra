@@ -24,7 +24,15 @@ It is a **single-instance** server: replication, cluster mode, Pub/Sub, streams,
 
 ## Quick start
 
-There are no pre-built binaries yet, so build from source. You need Windows 10 or 11, [Rust](https://rustup.rs/) (stable, MSVC toolchain) and the Visual Studio Build Tools with the C++ workload, which compiles the bundled Lua interpreter.
+**Download.** Get the latest `rexyra-vX.Y.Z-windows-x86_64.zip` from the [releases page](https://github.com/moznhub/rexyra/releases), unzip it and run the server. It is one self-contained executable for 64-bit Windows 10 and 11; nothing else needs installing.
+
+```powershell
+.\rexyra-server.exe --port 6379
+```
+
+The executable is not code-signed, so Windows SmartScreen may ask for confirmation the first time. Each release lists a SHA-256 checksum you can compare with `Get-FileHash`.
+
+**Or build from source.** You need [Rust](https://rustup.rs/) (stable, MSVC toolchain) and the Visual Studio Build Tools with the C++ workload, which compiles the bundled Lua interpreter.
 
 ```powershell
 git clone https://github.com/moznhub/rexyra.git
