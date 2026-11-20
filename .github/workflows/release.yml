@@ -65,7 +65,7 @@ jobs:
           $name = "rexyra-${{ github.ref_name }}-windows-x86_64"
           New-Item -ItemType Directory $name | Out-Null
           Copy-Item target\dist\release\rexyra-server.exe, README.md, CHANGELOG.md, LICENSE-MIT, LICENSE-APACHE $name
-          Copy-Item docs\COMPATIBILITY.md $name
+          Copy-Item docs\COMPATIBILITY.md, docs\WINDOWS-SERVICE.md $name
           Compress-Archive -Path $name -DestinationPath "$name.zip"
           $hash = (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower()
           "$hash  $name.zip" | Out-File -Encoding ascii "$name.zip.sha256"
