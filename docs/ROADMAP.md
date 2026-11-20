@@ -6,7 +6,7 @@ Sizes are relative: **S** is a few focused hours, **M** a few days, **L** a week
 
 | Milestone | Theme | Size |
 |---|---|---|
-| [0.2.0](#020-finish-the-release) | Finish the service and installer release | S |
+| [0.2.0](#020-loose-ends) | Loose ends of the service and installer release | S |
 | [0.3.0](#030-pubsub) | Pub/Sub | L |
 | [0.4.0](#040-client-libraries-and-keyspace-notifications) | Client libraries and keyspace notifications | L |
 | [0.5.0](#050-settings-that-survive-and-a-server-you-can-leave-alone) | Settings that survive a restart, and day-to-day operation | M |
@@ -21,15 +21,13 @@ The same for every item below, so it is not repeated:
 - Anything that touches the hot path is measured before and after with `rexyra-bench`, and the numbers are kept under [benchmarks](benchmarks).
 - Anything that installs a service or changes a machine is tried on the build machine by the `Installer` workflow, not on a developer's own.
 
-## 0.2.0: finish the release
+## 0.2.0: loose ends
 
-The service mode and the installer are built and pass on the build machine. What is left before the tag:
+Version 0.2.0 added the service mode, the installer, the public-domain licence and the third-party notices. What it left to tidy up:
 
 | | Item | Done when |
 |---|---|---|
-| S | Click through the installer once by hand | The folder and port pages behave: a bad port is refused, Back and Next go where they should, and an upgrade skips the port page. The automated test installs silently, so nobody has seen these pages yet. |
-| S | Licence | The project is under terms that let anyone use it for anything; see the pull request for the choice. |
-| S | Third-party notices | The zip and the installer carry the licence notices of the libraries built into the program (Lua, Tokio and the rest). They do not today. |
+| S | Click through the installer by hand | The folder and port pages behave: a bad port is refused, Back and Next go where they should, and an upgrade skips the port page. The automated test installs silently, so nobody has seen these pages yet. |
 | S | Dependency updates | The two open Dependabot pull requests are merged (mlua 0.12 is ready; `actions/checkout` needs a rebase), and the other actions that still run on a deprecated Node.js version are bumped. |
 | S | Make the installer check required | `Windows service and installer` is a required status check on `main`. |
 | S | Repository settings | Private vulnerability reporting on; labels and a few starter issues; Discussions if wanted. |
