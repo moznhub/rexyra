@@ -5,7 +5,7 @@ name: Installer
 # which a developer's own machine is not the place to try.
 on:
   push:
-    branches: [main, feature/msi-installer]
+    branches: [main]
   pull_request:
 
 env:
@@ -27,6 +27,34 @@ jobs:
         env:
           RUSTFLAGS: -C target-feature=+crt-static
         run: cargo build --release -p rexyra-server --target-dir target/dist
+
+      - name: Install WiX
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add -g WixToolset.UI.wixext/5.0.2
+          wix extension add -g WixToolset.Util.wixext/5.0.2
+
+      # Two installers: this version, and an earlier one to upgrade from.
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          installer/build.ps1 -Version $version -Server target\dist\release\rexyra-server.exe -Out rexyra.msi
+          installer/build.ps1 -Version 0.0.1 -Server target\dist\release\rexyra-server.exe -Out rexyra-earlier.msi
+
+      - name: Install, upgrade and uninstall
+        shell: pwsh
+        run: installer/test-installer.ps1 -Msi rexyra.msi -OldMsi rexyra-earlier.msi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: installer
+          path: |
+            rexyra.msi
+            *.log
+          if-no-files-found: ignore
 
       - name: Set up as a service by hand, as the guide describes
         shell: pwsh

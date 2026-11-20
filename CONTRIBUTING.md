@@ -104,7 +104,7 @@ One thread executes all commands and owns the keyspace; network I/O runs on a To
    git push origin v0.2.0
    ```
 
-3. The "Release" workflow tests the tagged commit, builds a self-contained `rexyra-server.exe`, and publishes the release with a checksum, using the changelog section as its notes. Versions before 1.0 are marked as pre-releases.
+3. The "Release" workflow tests the tagged commit, builds a self-contained `rexyra-server.exe` and the installer, tries the installer out on the build machine, and publishes the release with checksums, using the changelog section as its notes. Versions before 1.0 are marked as pre-releases.
 
 ## Licence
 

@@ -24,13 +24,15 @@ It is a **single-instance** server: replication, cluster mode, Pub/Sub, streams,
 
 ## Quick start
 
-**Download.** Get the latest `rexyra-vX.Y.Z-windows-x86_64.zip` from the [releases page](https://github.com/moznhub/rexyra/releases), unzip it and run the server. It is one self-contained executable for 64-bit Windows 10 and 11; nothing else needs installing.
+**Install it as a service.** Download `rexyra-vX.Y.Z-windows-x86_64.msi` from the [releases page](https://github.com/moznhub/rexyra/releases) and run it. Setup asks for the folder and the port, then installs Rexyra as a Windows service that starts with the machine. See [Running as a Windows service](#running-as-a-windows-service).
+
+**Or just run it.** Download `rexyra-vX.Y.Z-windows-x86_64.zip` from the same page, unzip it and start the server in a terminal. It is one self-contained executable for 64-bit Windows 10 and 11; nothing else needs installing.
 
 ```powershell
 .\rexyra-server.exe --port 6379
 ```
 
-The executable is not code-signed, so Windows SmartScreen may ask for confirmation the first time. Each release lists a SHA-256 checksum you can compare with `Get-FileHash`.
+Neither download is code-signed, so Windows SmartScreen may ask for confirmation the first time. Each release lists SHA-256 checksums you can compare with `Get-FileHash`.
 
 **Or build from source.** You need [Rust](https://rustup.rs/) (stable, MSVC toolchain) and the Visual Studio Build Tools with the C++ workload, which compiles the bundled Lua interpreter.
 
@@ -63,6 +65,7 @@ rexyra-server.exe rexyra.conf --port 7000
 | `--requirepass` | Password clients must give with `AUTH` | none |
 | `--protected-mode` | Without a password, accept only local connections | `yes` |
 | `--dir`, `--dbfilename` | Where the snapshot is kept | `.`, `dump.rdb` |
+| `--logfile` | File the log is written to | standard error |
 | `--save` | Automatic snapshots, as `seconds changes` pairs | `3600 1 300 100 60 10000` |
 | `--appendonly`, `--appendfsync` | The append-only file and when it is forced to disk | `no`, `everysec` |
 | `--maxmemory`, `--maxmemory-policy` | Memory limit and what to evict at the limit | none, `noeviction` |
@@ -72,21 +75,22 @@ Run `rexyra-server.exe --help` for the full list. Many settings can also be chan
 
 ## Running as a Windows service
 
-To have Rexyra start with Windows and restart if it fails, run it under a service wrapper such as [WinSW](https://github.com/winsw/winsw): Rexyra does not register with the Windows service manager itself yet. In short, with everything in `C:\Rexyra` and PowerShell opened as administrator:
+The installer (`.msi`) sets this up for you: it puts the program in the folder you choose, writes a configuration file with the port you choose, and installs and starts a service called **Rexyra**. The service runs under the low-privilege `LocalService` account, starts with Windows, is restarted if it crashes, and saves its data when it is stopped or the machine shuts down.
 
-1. Put `rexyra-server.exe`, a `rexyra.conf`, and WinSW renamed to `rexyra-service.exe` in the folder, with a `rexyra-service.xml` beside it that names the executable and the configuration file.
-2. Let the service account write to the `data` and `logs` folders.
-3. Install and start it:
+| | |
+|---|---|
+| `C:\Program Files\Rexyra\` | The program |
+| `C:\ProgramData\Rexyra\rexyra.conf` | The settings; edit and restart the service to change them |
+| `C:\ProgramData\Rexyra\data\` | The data files |
+| `C:\ProgramData\Rexyra\logs\rexyra.log` | The log |
 
-   ```powershell
-   C:\Rexyra\rexyra-service.exe install
-   ```
+For a scripted install:
 
-   ```powershell
-   C:\Rexyra\rexyra-service.exe start
-   ```
+```powershell
+msiexec /i rexyra-vX.Y.Z-windows-x86_64.msi /qn PORT=6380 INSTALLFOLDER="D:\Rexyra"
+```
 
-Stopping the service makes Rexyra save a snapshot and exit, as Ctrl+C does. **[docs/WINDOWS-SERVICE.md](docs/WINDOWS-SERVICE.md)** has the complete steps: the two files to copy, permissions, logs, what is kept when the machine shuts down, opening the port to other machines, and upgrading.
+**[docs/WINDOWS-SERVICE.md](docs/WINDOWS-SERVICE.md)** covers the rest: upgrading and removing, what is kept when the service stops, opening the port to other machines, and setting the service up by hand with `rexyra-server.exe --service`.
 
 ## Supported commands
 
