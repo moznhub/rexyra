@@ -45,6 +45,19 @@ fn text(body: &[u8]) -> String {
     String::from_utf8_lossy(body).into_owned()
 }
 
+/// The text of a simple string or error. Neither may contain a line break:
+/// a line ends at the first CRLF, so the only one that could get this far
+/// is a carriage return on its own, and that is refused rather than passed
+/// on as part of the text.
+fn line_text(body: &[u8]) -> Result<String, Stop> {
+    if body.contains(&b'\r') {
+        return Err(invalid(
+            "Protocol error: carriage return inside a simple string",
+        ));
+    }
+    Ok(text(body))
+}
+
 /// Parses a length header. `None` means the RESP2 null marker (`-1`).
 fn length(body: &[u8], max: usize, what: &str) -> Result<Option<usize>, Stop> {
     match parse_i64(body) {
@@ -88,8 +101,8 @@ fn parse(src: &[u8], pos: &mut usize, depth: usize) -> Result<Frame, Stop> {
     let body = line(src, pos)?;
 
     match tag {
-        b'+' => Ok(Frame::Simple(text(body))),
-        b'-' => Ok(Frame::Error(text(body))),
+        b'+' => Ok(Frame::Simple(line_text(body)?)),
+        b'-' => Ok(Frame::Error(line_text(body)?)),
         b':' => parse_i64(body)
             .map(Frame::Integer)
             .ok_or_else(|| invalid("Protocol error: invalid integer")),
@@ -190,6 +203,34 @@ mod tests {
     }
 
     #[test]
+    fn a_bare_carriage_return_in_a_line_is_refused() {
+        // Found by fuzzing: these were accepted, with the carriage return as
+        // part of the text, and could not be written back as they were read.
+        for input in [
+            &b"+a\rb\r\n"[..],
+            b"-~,\r\r\n",
+            b"+\r\r\n",
+            b"*1\r\n-ERR\rx\r\n",
+        ] {
+            let error = dec(input).unwrap_err();
+            assert!(
+                error.to_string().contains("carriage return"),
+                "{:?}: {error}",
+                input.escape_ascii().to_string()
+            );
+        }
+        // Without one, the same lines are fine, other control bytes included.
+        assert_eq!(dec(b"+a b\r\n").unwrap(), Some(Frame::Simple("a b".into())));
+        assert_eq!(
+            dec(b"+a\tb\0\r\n").unwrap(),
+            Some(Frame::Simple("a\tb\0".into()))
+        );
+        assert_eq!(dec(b"-\r\n").unwrap(), Some(Frame::error("")));
+        // A bulk string may hold anything.
+        assert_eq!(dec(b"$3\r\na\rb\r\n").unwrap(), Some(Frame::bulk("a\rb")));
+    }
+
+    #[test]
     fn decodes_resp3_values() {
         assert_eq!(dec(b"_\r\n").unwrap(), Some(Frame::Null));
         assert_eq!(dec(b"#t\r\n").unwrap(), Some(Frame::Boolean(true)));
@@ -287,6 +328,119 @@ mod tests {
                 prop::collection::vec((inner.clone(), inner), 0..4).prop_map(Frame::Map),
             ]
         })
+    }
+
+    /// A small deterministic source of bytes: enough to explore the grammar
+    /// in an ordinary test run, without a fuzzer.
+    struct Noise(u64);
+
+    impl Noise {
+        fn next(&mut self) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 >> 16) as usize
+        }
+
+        /// Bytes that look enough like RESP for the decoder to accept a fair
+        /// share of them.
+        fn resp_like(&mut self) -> Vec<u8> {
+            const PIECES: &[&[u8]] = &[
+                b"+",
+                b"-",
+                b":",
+                b"$",
+                b"*",
+                b"_",
+                b"#",
+                b",",
+                b"(",
+                b"=",
+                b"%",
+                b"~",
+                b">",
+                b"\r\n",
+                b"\r\n",
+                b"\r\n",
+                b"\r",
+                b"\n",
+                b"0",
+                b"1",
+                b"2",
+                b"3",
+                b"4",
+                b"7",
+                b"-1",
+                b"t",
+                b"f",
+                b"txt:",
+                b"a",
+                b"OK",
+                b"inf",
+                b"nan",
+                b".",
+                b"e",
+                b"E",
+                b" ",
+                b"\xff",
+                b"\0",
+                b"$5\r\nhello\r\n",
+                b":12\r\n",
+                b"+x\r\n",
+            ];
+            let mut out = Vec::new();
+            for _ in 0..1 + self.next() % 10 {
+                out.extend_from_slice(PIECES[self.next() % PIECES.len()]);
+            }
+            out
+        }
+    }
+
+    fn has_nan(frame: &Frame) -> bool {
+        match frame {
+            Frame::Double(d) => d.is_nan(),
+            Frame::Array(items) | Frame::Set(items) | Frame::Push(items) => {
+                items.iter().any(has_nan)
+            }
+            Frame::Map(pairs) => pairs.iter().any(|(k, v)| has_nan(k) || has_nan(v)),
+            _ => false,
+        }
+    }
+
+    /// The property the fuzz target checks, on generated input: whatever
+    /// the decoder accepts, the encoder writes back in a form that decodes
+    /// to the same value.
+    #[test]
+    fn whatever_decodes_survives_reencoding() {
+        let mut noise = Noise(0x9E37_79B9_7F4A_7C15);
+        let mut accepted = 0;
+        for _ in 0..300_000 {
+            let input = noise.resp_like();
+            let mut buf = BytesMut::from(&input[..]);
+            let Ok(Some(frame)) = decode(&mut buf) else {
+                continue;
+            };
+            // NaN is not equal to itself, so it cannot be compared.
+            if has_nan(&frame) {
+                continue;
+            }
+            accepted += 1;
+            let mut wire = BytesMut::new();
+            encode(&frame, Protocol::Resp3, &mut wire);
+            let again = decode(&mut wire);
+            assert_eq!(
+                again.ok().flatten().as_ref(),
+                Some(&frame),
+                "input {:?}",
+                input.escape_ascii().to_string()
+            );
+            assert!(
+                wire.is_empty(),
+                "input {:?}",
+                input.escape_ascii().to_string()
+            );
+        }
+        assert!(accepted > 20_000, "only {accepted} inputs were accepted");
     }
 
     proptest! {
