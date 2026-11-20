@@ -1,7 +1,7 @@
 # Rexyra
 
 [![CI](https://github.com/moznhub/rexyra/actions/workflows/ci.yml/badge.svg)](https://github.com/moznhub/rexyra/actions/workflows/ci.yml)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#licence)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](#licence)
 
 A Redis-compatible in-memory data server for Windows, written in Rust.
 
@@ -172,16 +172,11 @@ Please report security problems privately, as described in [SECURITY.md](SECURIT
 
 ## Licence
 
-Licensed under either of
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT licence ([LICENSE-MIT](LICENSE-MIT))
-
-at your option.
+Licensed under the [Apache License, Version 2.0](LICENSE).
 
 The libraries it is built with keep their own licences, which are mostly MIT or Apache-2.0; their notices are in `THIRD-PARTY-NOTICES.txt` in each download.
 
-Unless you state otherwise, any contribution you submit for inclusion in Rexyra is licensed the same way, without additional terms.
+Unless you state otherwise, any contribution you submit for inclusion in Rexyra is licensed under the Apache License, Version 2.0, without additional terms.
 
 ## Trademark notice
 

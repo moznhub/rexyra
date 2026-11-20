@@ -108,7 +108,7 @@ One thread executes all commands and owns the keyspace; network I/O runs on a To
 
 ## Licence
 
-Rexyra is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at the user's option. By submitting a contribution you agree that it is licensed under the same terms, with no additional conditions, and you confirm that it is yours to give: your own work, not copied from Redis or from any source whose licence asks for more.
+Rexyra is licensed under the [Apache License, Version 2.0](LICENSE). By submitting a contribution you agree that it is licensed under the same terms, with no additional conditions, and you confirm that it is yours to give: your own work, not copied from Redis or from any source whose licence asks for more.
 
 ## Conduct and security
 
