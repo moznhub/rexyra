@@ -9,7 +9,9 @@
         wix extension add -g WixToolset.UI.wixext/5.0.2
         wix extension add -g WixToolset.Util.wixext/5.0.2
 
-    and a release build of the server, preferably with the C runtime linked
+    Python, which collects the licence notices of the libraries built into
+    the program (tools\third-party-notices.py), and a release build of the
+    server, preferably with the C runtime linked
     in so that the program needs nothing else installed:
 
         $env:RUSTFLAGS = '-C target-feature=+crt-static'
@@ -29,11 +31,18 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $Server = (Resolve-Path $Server).Path
 
+# The notices of the libraries inside the program go into the package.
+$notices = Join-Path $root 'target\THIRD-PARTY-NOTICES.txt'
+New-Item -ItemType Directory -Force (Split-Path $notices) | Out-Null
+python (Join-Path $root 'tools\third-party-notices.py') $notices
+if ($LASTEXITCODE -ne 0) { throw "collecting the third-party notices failed with exit code $LASTEXITCODE" }
+
 $arguments = @(
     'build', '-arch', 'x64',
     '-d', "Version=$Version",
     '-d', "Server=$Server",
     '-d', "Root=$root",
+    '-d', "Notices=$notices",
     '-ext', 'WixToolset.UI.wixext',
     '-ext', 'WixToolset.Util.wixext',
     '-o', $Out,

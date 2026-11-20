@@ -174,7 +174,7 @@ Please report security problems privately, as described in [SECURITY.md](SECURIT
 
 Rexyra is free and unencumbered software released into the public domain under [The Unlicense](LICENSE). Anyone may use, copy, modify, publish, sell or distribute it, as source or as a program, for any purpose and without conditions. It comes with no warranty.
 
-The libraries it is built with keep their own licences, which are mostly MIT or Apache-2.0. Versions up to 0.1.0 were published under MIT or Apache-2.0 and remain available on those terms.
+The libraries it is built with keep their own licences, which are mostly MIT or Apache-2.0; their notices are in `THIRD-PARTY-NOTICES.txt` in each download. Versions up to 0.1.0 were published under MIT or Apache-2.0 and remain available on those terms.
 
 Any contribution you submit for inclusion in Rexyra is dedicated to the public domain in the same way.
 
