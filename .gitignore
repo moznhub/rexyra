@@ -4,6 +4,10 @@
 /fuzz/corpus
 /fuzz/artifacts
 
+# .NET build output of the client tests
+/clients/**/bin/
+/clients/**/obj/
+
 # Data files a server leaves in its working directory
 *.rdb
 *.aof

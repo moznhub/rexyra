@@ -28,6 +28,25 @@ jobs:
       - name: Release build
         run: cargo build --release -p rexyra-server
 
+  clients-dotnet:
+    name: Client tests (StackExchange.Redis ${{ matrix.version }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ["2.12.14", "3.4.35"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Build the server
+        run: cargo build --release -p rexyra-server
+      - name: Test
+        run: dotnet test clients/dotnet/StackExchangeRedis -p:StackExchangeRedisVersion=${{ matrix.version }} --logger "console;verbosity=normal"
+
   fuzz:
     # The protocol crate has no platform-specific code, and libFuzzer is best
     # supported on Linux, so the fuzz smoke test runs there.

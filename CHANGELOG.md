@@ -4,6 +4,10 @@ All notable changes to Rexyra are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added
+
+- Tests with the StackExchange.Redis client library (versions 2.12 and 3.4), run in CI: [clients/README.md](https://github.com/moznhub/rexyra/blob/main/clients/README.md).
+
 ### Changed
 
 - **Licence.** Rexyra is licensed under the Apache License, Version 2.0, instead of The Unlicense. Version 0.2.0 was released into the public domain and stays that way; later versions are under Apache-2.0.
