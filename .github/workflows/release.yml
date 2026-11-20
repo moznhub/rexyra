@@ -1,0 +1,114 @@
+name: Release
+
+# Pushing a tag like v0.1.0 builds the server on a clean Windows machine,
+# checks it, and publishes it as a GitHub release with a checksum.
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build and publish (Windows x86_64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check that the tag matches the version in Cargo.toml
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          if ("v$version" -ne "${{ github.ref_name }}") {
+            throw "The tag is ${{ github.ref_name }} but Cargo.toml says version $version."
+          }
+
+      - name: Test
+        run: cargo test --workspace
+
+      # The C runtime is linked into the executable, so it runs on a machine
+      # without the Visual C++ redistributable installed.
+      - name: Build
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release -p rexyra-server --target-dir target/dist
+
+      - name: Check that the built server answers
+        shell: pwsh
+        run: |
+          $server = Start-Process -FilePath target\dist\release\rexyra-server.exe -ArgumentList "--port", "6400" -PassThru -WindowStyle Hidden
+          try {
+            Start-Sleep -Seconds 2
+            $client = [System.Net.Sockets.TcpClient]::new("127.0.0.1", 6400)
+            $stream = $client.GetStream()
+            $request = [System.Text.Encoding]::ASCII.GetBytes("PING`r`n")
+            $stream.Write($request, 0, $request.Length)
+            $buffer = New-Object byte[] 64
+            $read = $stream.Read($buffer, 0, $buffer.Length)
+            $reply = [System.Text.Encoding]::ASCII.GetString($buffer, 0, $read).Trim()
+            $client.Close()
+            if ($reply -ne "+PONG") { throw "Expected +PONG, got '$reply'." }
+          } finally {
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Package
+        id: package
+        shell: pwsh
+        run: |
+          $name = "rexyra-${{ github.ref_name }}-windows-x86_64"
+          New-Item -ItemType Directory $name | Out-Null
+          Copy-Item target\dist\release\rexyra-server.exe, README.md, CHANGELOG.md, LICENSE-MIT, LICENSE-APACHE $name
+          Copy-Item docs\COMPATIBILITY.md $name
+          Compress-Archive -Path $name -DestinationPath "$name.zip"
+          $hash = (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name.zip" | Out-File -Encoding ascii "$name.zip.sha256"
+          "name=$name" >> $env:GITHUB_OUTPUT
+          "hash=$hash" >> $env:GITHUB_OUTPUT
+
+      - name: Write the release notes
+        shell: pwsh
+        run: |
+          # The section of CHANGELOG.md for this version, then how to verify
+          # the download.
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          $lines = Get-Content CHANGELOG.md
+          $start = ($lines | Select-String -Pattern "^## \[$([regex]::Escape($version))\]" | Select-Object -First 1).LineNumber
+          if (-not $start) { throw "CHANGELOG.md has no section for version $version." }
+          $rest = $lines[$start..($lines.Count - 1)]
+          $next = ($rest | Select-String -Pattern "^## \[" | Select-Object -First 1).LineNumber
+          $body = if ($next) { $rest[0..($next - 2)] } else { $rest }
+          $notes = @($body) + @(
+            "",
+            "## Download",
+            "",
+            "``${{ steps.package.outputs.name }}.zip`` contains ``rexyra-server.exe``, a single self-contained executable for 64-bit Windows 10 and 11, with the licences and documentation.",
+            "",
+            "SHA-256: ``${{ steps.package.outputs.hash }}``",
+            "",
+            "The executable is not code-signed. Windows SmartScreen may ask for confirmation the first time it runs, and some antivirus products flag new unsigned programs on heuristics alone; compare the checksum above with ``Get-FileHash`` if in doubt, or build from source."
+          )
+          $notes | Out-File -Encoding utf8 release-notes.md
+
+      - name: Publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $arguments = @(
+            "${{ github.ref_name }}",
+            "${{ steps.package.outputs.name }}.zip",
+            "${{ steps.package.outputs.name }}.zip.sha256",
+            "--title", "Rexyra ${{ github.ref_name }}",
+            "--notes-file", "release-notes.md",
+            "--verify-tag"
+          )
+          # Versions before 1.0 are published as pre-releases.
+          if ("${{ github.ref_name }}".StartsWith("v0.")) { $arguments += "--prerelease" }
+          gh release create @arguments

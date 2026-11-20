@@ -16,7 +16,7 @@ Thank you for considering a contribution. Rexyra is a Redis-compatible server fo
 - **No `unsafe`.** It is forbidden across the workspace (`unsafe_code = "forbid"`).
 - **Match Redis exactly where a client can see it.** Replies and error messages are compared with Redis byte for byte; client libraries and test suites depend on them.
 - **Do not copy code from Redis.** Rexyra is an independent implementation under a different licence. Establish behaviour from the public documentation and by observing a running Redis server, not from its source code.
-- **Every change in behaviour comes with a test** that fails without the change.
+- **Every change in behaviour comes with a test** that fails without the change, and a line under "Unreleased" in `CHANGELOG.md` if users can notice it.
 - **If Rexyra differs from Redis on purpose, say so** in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md), in the same pull request.
 
 ## Getting set up
@@ -93,6 +93,18 @@ One thread executes all commands and owns the keyspace; network I/O runs on a To
 - Explain what the change does and how you checked it. "Compared with Redis 7.4: identical" is the kind of sentence reviewers look for.
 - Do not mix reformatting or renaming with a change in behaviour.
 - Expect review comments; they are about the code, not about you.
+
+## Releasing (maintainers)
+
+1. Set the new version in the root `Cargo.toml` and move the entries under "Unreleased" in `CHANGELOG.md` to a section for it, with the date. Merge that through a pull request.
+2. Tag the merge commit on `main` and push the tag:
+
+   ```powershell
+   git tag -a v0.2.0 -m "Rexyra 0.2.0"
+   git push origin v0.2.0
+   ```
+
+3. The "Release" workflow tests the tagged commit, builds a self-contained `rexyra-server.exe`, and publishes the release with a checksum, using the changelog section as its notes. Versions before 1.0 are marked as pre-releases.
 
 ## Licence
 
