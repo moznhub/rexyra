@@ -18,7 +18,7 @@ Rexyra speaks the Redis protocol (RESP2 and RESP3) and implements 180 Redis comm
 
 ## Status
 
-Pre-release. Rexyra passes its own test suite of about 480 tests and has been exercised with `redis-cli` and `redis-benchmark`; it has not been used in production, and client libraries have not been tested systematically yet.
+Pre-release. Rexyra passes its own test suite of about 480 tests and has been exercised with `redis-cli` and `redis-benchmark`; it has not been used in production. Of the client libraries, StackExchange.Redis is tested in CI (see [clients](clients/README.md)); the others have not been tested systematically yet.
 
 It is a **single-instance** server: replication, cluster mode, Pub/Sub, streams, modules and TLS are not implemented. See [what differs from Redis](docs/COMPATIBILITY.md) and the [roadmap](docs/ROADMAP.md).
 
