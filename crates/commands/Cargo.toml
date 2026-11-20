@@ -1,0 +1,22 @@
+[package]
+name = "rexyra-commands"
+description = "Command table, argument validation and command handlers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bytes.workspace = true
+getrandom.workspace = true
+memory-stats.workspace = true
+mlua.workspace = true
+rexyra-resp.workspace = true
+rexyra-engine.workspace = true
+rexyra-persist.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

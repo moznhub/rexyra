@@ -1,0 +1,34 @@
+[workspace]
+resolver = "2"
+members = ["crates/resp", "crates/engine", "crates/persist", "crates/commands", "crates/server", "tools/rexyra-bench"]
+exclude = ["fuzz"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/moznhub/rexyra"
+
+[workspace.dependencies]
+bytes = "1"
+cap = "0.1"
+getrandom = "0.4"
+itoa = "1"
+memory-stats = "1"
+mlua = { version = "0.10", features = ["lua51", "vendored", "send"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "signal", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi"] }
+proptest = "1"
+
+rexyra-resp = { path = "crates/resp" }
+rexyra-engine = { path = "crates/engine" }
+rexyra-persist = { path = "crates/persist" }
+rexyra-commands = { path = "crates/commands" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

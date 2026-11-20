@@ -1,0 +1,16 @@
+# Build output
+/target
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+
+# Data files a server leaves in its working directory
+*.rdb
+*.aof
+appendonlydir/
+
+# Local notes and editor or tool state
+/PLAN.md
+.vscode/
+.idea/
+*.swp

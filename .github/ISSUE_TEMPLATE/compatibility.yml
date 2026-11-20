@@ -1,0 +1,50 @@
+name: Compatibility difference
+description: A command behaves differently in Rexyra than in Redis.
+labels: ["compatibility"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you. Differences from Redis are the most useful reports for this project.
+        Please check docs/COMPATIBILITY.md first: if it is listed there, it is deliberate.
+  - type: textarea
+    id: commands
+    attributes:
+      label: Commands to reproduce
+      description: The exact commands, in order, starting from an empty database if possible.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: redis
+    attributes:
+      label: What Redis replies
+      description: Paste the reply, and say which Redis version.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: rexyra
+    attributes:
+      label: What Rexyra replies
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Rexyra version or commit
+      placeholder: "output of: rexyra-server --version, or a commit hash"
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: Client and protocol
+      description: The client library or tool, and RESP2 or RESP3 if you know.
+      placeholder: "redis-cli 7.4, RESP2"
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: Configuration that matters, or how you came across it.

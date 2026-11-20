@@ -1,0 +1,50 @@
+name: Bug report
+description: A crash, hang, data loss, wrong result or other fault.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a security problem, please do not open an issue: see SECURITY.md.
+        If a command simply replies differently from Redis, use the "Compatibility difference" form instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: And what you expected to happen instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Commands, configuration and data needed to see it. The smaller the better.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Rexyra version or commit
+      placeholder: "output of: rexyra-server --version, or a commit hash"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: "Windows 11 23H2, Windows Server 2022, ..."
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: Command-line options or the relevant lines of the configuration file. Remove passwords.
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: Server output
+      description: What the server printed around the time of the fault.
+      render: text

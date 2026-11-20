@@ -1,0 +1,32 @@
+name: Feature or command request
+description: A Redis command or feature you need that Rexyra does not have.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What is missing
+      description: The command, option or feature, with a link to its Redis documentation if there is one.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: What you need it for
+      description: The application, library or workflow that depends on it. This helps decide what to build first.
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      description: Rexyra is a single-instance server for Windows. Replication, cluster mode and Pub/Sub are outside its current scope.
+      options:
+        - label: I have checked docs/ROADMAP.md and the README for this feature.
+          required: true
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Would you like to work on it?
+      options:
+        - label: I am willing to open a pull request for this.

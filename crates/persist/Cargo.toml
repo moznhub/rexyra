@@ -1,0 +1,17 @@
+[package]
+name = "rexyra-persist"
+description = "Persistence: the RDB snapshot format"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bytes.workspace = true
+rexyra-engine.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

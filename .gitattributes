@@ -1,0 +1,7 @@
+# Text files are stored with LF line endings whatever the platform checks
+# them out as; the sources are written that way.
+* text=auto eol=lf
+
+*.rdb binary
+*.aof binary
+*.png binary

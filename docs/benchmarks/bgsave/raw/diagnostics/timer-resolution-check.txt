@@ -1,0 +1,2 @@
+Condvar::wait_timeout_while(1 ms): n=300 min=1.040 p50=15.422 p90=16.244 p99=17.822 max=19.550 ms
+thread::sleep(1 ms): n=300 min=1.008 p50=1.512 p90=1.560 p99=1.742 max=1.826 ms

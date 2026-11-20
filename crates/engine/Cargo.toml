@@ -1,0 +1,16 @@
+[package]
+name = "rexyra-engine"
+description = "Keyspace: incrementally rehashed hash table, databases, values and expiry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bytes.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

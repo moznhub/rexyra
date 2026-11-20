@@ -1,0 +1,20 @@
+[package]
+name = "rexyra-server"
+description = "Redis-compatible server for Windows: networking, client lifecycle and the command execution thread"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bytes.workspace = true
+cap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rexyra-resp.workspace = true
+rexyra-engine.workspace = true
+rexyra-commands.workspace = true
+
+[lints]
+workspace = true

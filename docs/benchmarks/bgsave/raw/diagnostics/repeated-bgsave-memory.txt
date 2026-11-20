@@ -1,0 +1,7 @@
+keys :200000
+after load       257023719
+after BGSAVE 1   266623975 delta vs load +9600256 (48.00 B/key)
+after BGSAVE 2   266623975 delta vs load +9600256 (48.00 B/key)
+after BGSAVE 3   266623975 delta vs load +9600256 (48.00 B/key)
+after re-SET all 261299687 delta vs load +4275968
+after BGSAVE 4   266099687 delta vs re-SET +4800000 (24.00 B/key)
