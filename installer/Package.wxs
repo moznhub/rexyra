@@ -127,11 +127,8 @@
       <Component Id="Compatibility">
         <File Source="$(var.Root)\docs\COMPATIBILITY.md" KeyPath="yes" />
       </Component>
-      <Component Id="LicenceMit">
-        <File Source="$(var.Root)\LICENSE-MIT" KeyPath="yes" />
-      </Component>
-      <Component Id="LicenceApache">
-        <File Source="$(var.Root)\LICENSE-APACHE" KeyPath="yes" />
+      <Component Id="Licence">
+        <File Source="$(var.Root)\LICENSE" Name="LICENSE.txt" KeyPath="yes" />
       </Component>
     </ComponentGroup>
   </Fragment>

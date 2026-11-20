@@ -18,6 +18,7 @@ Rexyra can now be installed as a Windows service.
 
 ### Changed
 
+- **Licence.** Rexyra is now released into the public domain under The Unlicense: free for anyone to use for anything, without conditions. Earlier versions remain available under MIT or Apache-2.0.
 - The log is written without colour codes when it goes to a file or a pipe rather than a terminal, or when `NO_COLOR` is set.
 - The line logged at start-up includes the version.
 
