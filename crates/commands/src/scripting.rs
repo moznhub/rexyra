@@ -10,6 +10,7 @@
 //! script's return value back to a reply, following Redis's rules (see
 //! [`frame_to_lua`] and [`lua_to_frame`]).
 
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -188,22 +189,29 @@ fn with_error_code(text: &str) -> String {
 fn script_position(lua: &Lua) -> Option<(String, String, i64)> {
     // Skip built-in functions and this module's own Lua wrappers.
     let mut level = 1;
-    let frame = loop {
-        let frame = lua.inspect_stack(level)?;
-        let source = frame.source();
-        let internal = source.what == "C" || source.source.as_deref() == Some("@bootstrap");
-        if !internal || level >= 4 {
-            break frame;
+    loop {
+        let found = lua.inspect_stack(level, |frame| {
+            let source = frame.source();
+            let internal = source.what == "C" || source.source.as_deref() == Some("@bootstrap");
+            if internal && level < 4 {
+                return None;
+            }
+            // Lua reports -1 where there is no line to name.
+            let line = frame
+                .current_line()
+                .and_then(|line| i64::try_from(line).ok())
+                .unwrap_or(-1);
+            Some((
+                source.source.map(Cow::into_owned),
+                source.short_src.map(Cow::into_owned),
+                line,
+            ))
+        })?;
+        if let Some((source, short, line)) = found {
+            return Some((source?, short?, line));
         }
         level += 1;
-    };
-    let line = i64::from(frame.curr_line());
-    let source = frame.source();
-    Some((
-        source.source?.into_owned(),
-        source.short_src?.into_owned(),
-        line,
-    ))
+    }
 }
 
 /// A Lua runtime error carrying `text`, prefixed with the script position
@@ -325,11 +333,11 @@ impl Scripting {
         let api = lua.create_table()?;
         api.raw_set(
             "sha1hex",
-            lua.create_function(|_, text: mlua::String| Ok(sha1_hex(&text.as_bytes())))?,
+            lua.create_function(|_, text: mlua::LuaString| Ok(sha1_hex(&text.as_bytes())))?,
         )?;
         api.raw_set(
             "status_reply",
-            lua.create_function(|lua, text: mlua::String| {
+            lua.create_function(|lua, text: mlua::LuaString| {
                 let table = lua.create_table()?;
                 table.raw_set("ok", text)?;
                 Ok(table)
@@ -337,7 +345,7 @@ impl Scripting {
         )?;
         api.raw_set(
             "error_reply",
-            lua.create_function(|lua, text: mlua::String| {
+            lua.create_function(|lua, text: mlua::LuaString| {
                 let table = lua.create_table()?;
                 table.raw_set("err", with_error_code(&text.to_string_lossy()))?;
                 Ok(table)
@@ -348,7 +356,7 @@ impl Scripting {
         lua.set_hook(
             HookTriggers::new().every_nth_instruction(HOOK_INTERVAL),
             move |_, _| shared.check(),
-        );
+        )?;
 
         let shared = Arc::clone(&watchdog);
         api.raw_set(
@@ -478,10 +486,10 @@ impl Scripting {
         ] {
             load_api.raw_set(name, api.raw_get::<Value>(name)?)?;
         }
-        load_api.set_metatable(Some(guard.clone()));
+        load_api.set_metatable(Some(guard.clone()))?;
         let load_globals = lua.create_table()?;
         load_globals.raw_set("redis", load_api.clone())?;
-        load_globals.set_metatable(Some(guard));
+        load_globals.set_metatable(Some(guard))?;
 
         Ok(Scripting {
             lua,
@@ -1229,7 +1237,9 @@ impl Scripting {
         meta.raw_set("__index", self.load_globals.clone())
             .and_then(|()| meta.raw_set("__newindex", self.readonly.clone()))
             .map_err(lua_error)?;
-        environment.set_metatable(Some(meta.clone()));
+        environment
+            .set_metatable(Some(meta.clone()))
+            .map_err(lua_error)?;
         chunk.set_environment(environment).map_err(lua_error)?;
 
         let registered: RefCell<Vec<LibraryFunction>> = RefCell::new(Vec::new());
