@@ -105,6 +105,7 @@ try {
     Check 'it runs the installed program in service mode' ($service.PathName -like "*$InstallFolder\rexyra-server.exe*--service*") $service.PathName
     Check 'it is restarted after a crash' ((sc.exe qfailure Rexyra | Out-String) -match 'RESTART') (sc.exe qfailure Rexyra | Out-String)
     Check 'the program is in the chosen folder' (Test-Path (Join-Path $InstallFolder 'rexyra-server.exe'))
+    Check 'with the licence and the third-party notices' ((Test-Path (Join-Path $InstallFolder 'LICENSE.txt')) -and (Test-Path (Join-Path $InstallFolder 'THIRD-PARTY-NOTICES.txt')))
     Check 'the configuration file was written' (Test-Path $config)
     Check 'it holds the chosen port' ((Get-Content $config -ErrorAction SilentlyContinue) -contains "port $Port")
 

@@ -14,10 +14,12 @@ Rexyra can now be installed as a Windows service.
 - **A service mode**, `rexyra-server.exe --service`, for running under the Windows service manager without a wrapper. The server reports its progress while it loads and saves, and writes a snapshot before it exits when the service is stopped or Windows shuts down.
 - **`logfile`**, to write the log to a file instead of standard error.
 - **`--create-config <PATH>`**, which writes a starting configuration file from the other options, unless the file exists.
+- `THIRD-PARTY-NOTICES.txt` in the zip and the installer, with the licence notices of the libraries built into the program.
 - A guide to running Rexyra as a Windows service: [docs/WINDOWS-SERVICE.md](https://github.com/moznhub/rexyra/blob/main/docs/WINDOWS-SERVICE.md).
 
 ### Changed
 
+- **Licence.** Rexyra is now released into the public domain under The Unlicense: free for anyone to use for anything, without conditions. Earlier versions remain available under MIT or Apache-2.0.
 - The log is written without colour codes when it goes to a file or a pipe rather than a terminal, or when `NO_COLOR` is set.
 - The line logged at start-up includes the version.
 

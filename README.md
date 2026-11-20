@@ -1,7 +1,7 @@
 # Rexyra
 
 [![CI](https://github.com/moznhub/rexyra/actions/workflows/ci.yml/badge.svg)](https://github.com/moznhub/rexyra/actions/workflows/ci.yml)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#licence)
+[![Licence: public domain (Unlicense)](https://img.shields.io/badge/licence-public%20domain-blue.svg)](#licence)
 
 A Redis-compatible in-memory data server for Windows, written in Rust.
 
@@ -172,12 +172,11 @@ Please report security problems privately, as described in [SECURITY.md](SECURIT
 
 ## Licence
 
-Licensed under either of
+Rexyra is free and unencumbered software released into the public domain under [The Unlicense](LICENSE). Anyone may use, copy, modify, publish, sell or distribute it, as source or as a program, for any purpose and without conditions. It comes with no warranty.
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT licence ([LICENSE-MIT](LICENSE-MIT))
+The libraries it is built with keep their own licences, which are mostly MIT or Apache-2.0; their notices are in `THIRD-PARTY-NOTICES.txt` in each download. Versions up to 0.1.0 were published under MIT or Apache-2.0 and remain available on those terms.
 
-at your option. Unless you state otherwise, any contribution you submit for inclusion in Rexyra is licensed the same way, without additional terms.
+Any contribution you submit for inclusion in Rexyra is dedicated to the public domain in the same way.
 
 ## Trademark notice
 

@@ -8,6 +8,7 @@
     Version   the product version, x.y.z
     Server    the path of rexyra-server.exe
     Root      the root of the repository, for the documentation
+    Notices   the path of the third-party notices, which it generates
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
@@ -127,11 +128,11 @@
       <Component Id="Compatibility">
         <File Source="$(var.Root)\docs\COMPATIBILITY.md" KeyPath="yes" />
       </Component>
-      <Component Id="LicenceMit">
-        <File Source="$(var.Root)\LICENSE-MIT" KeyPath="yes" />
+      <Component Id="Licence">
+        <File Source="$(var.Root)\LICENSE" Name="LICENSE.txt" KeyPath="yes" />
       </Component>
-      <Component Id="LicenceApache">
-        <File Source="$(var.Root)\LICENSE-APACHE" KeyPath="yes" />
+      <Component Id="Notices">
+        <File Source="$(var.Notices)" Name="THIRD-PARTY-NOTICES.txt" KeyPath="yes" />
       </Component>
     </ComponentGroup>
   </Fragment>
