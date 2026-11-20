@@ -4,6 +4,14 @@ All notable changes to Rexyra are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added
+
+- A guide to running Rexyra as a Windows service: [docs/WINDOWS-SERVICE.md](https://github.com/moznhub/rexyra/blob/main/docs/WINDOWS-SERVICE.md).
+
+### Changed
+
+- The log is written without colour codes when it goes to a file or a pipe rather than a terminal, or when `NO_COLOR` is set.
+
 ## [0.1.0] - 2026-11-20
 
 The first public release: a Redis-compatible in-memory data server for Windows, written in Rust. It is a pre-release, tested with its own suite, `redis-cli` and `redis-benchmark`, and not yet used in production.

@@ -70,6 +70,24 @@ rexyra-server.exe rexyra.conf --port 7000
 
 Run `rexyra-server.exe --help` for the full list. Many settings can also be changed while the server runs with `CONFIG SET`. Directives in a configuration file that Rexyra does not support are skipped with a warning, so an existing `redis.conf` is a reasonable starting point.
 
+## Running as a Windows service
+
+To have Rexyra start with Windows and restart if it fails, run it under a service wrapper such as [WinSW](https://github.com/winsw/winsw): Rexyra does not register with the Windows service manager itself yet. In short, with everything in `C:\Rexyra` and PowerShell opened as administrator:
+
+1. Put `rexyra-server.exe`, a `rexyra.conf`, and WinSW renamed to `rexyra-service.exe` in the folder, with a `rexyra-service.xml` beside it that names the executable and the configuration file.
+2. Let the service account write to the `data` and `logs` folders.
+3. Install and start it:
+
+   ```powershell
+   C:\Rexyra\rexyra-service.exe install
+   ```
+
+   ```powershell
+   C:\Rexyra\rexyra-service.exe start
+   ```
+
+Stopping the service makes Rexyra save a snapshot and exit, as Ctrl+C does. **[docs/WINDOWS-SERVICE.md](docs/WINDOWS-SERVICE.md)** has the complete steps: the two files to copy, permissions, logs, what is kept when the machine shuts down, opening the port to other machines, and upgrading.
+
 ## Supported commands
 
 | Group | Commands |

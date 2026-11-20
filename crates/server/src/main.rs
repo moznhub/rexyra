@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use rexyra_server::config::{ArgsOutcome, Config, USAGE};
@@ -21,8 +22,12 @@ fn main() -> ExitCode {
         }
     };
 
+    // Colour is for someone watching a terminal; a log file gets plain text.
+    let colour = std::io::stderr().is_terminal()
+        && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty());
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
+        .with_ansi(colour)
         .with_target(false)
         .init();
 
