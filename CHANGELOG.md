@@ -4,13 +4,22 @@ All notable changes to Rexyra are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-21
+
+Rexyra can now be installed as a Windows service.
+
 ### Added
 
+- **An installer** (`.msi`). Setup asks for the folder and the port, then installs and starts Rexyra as a Windows service under the `LocalService` account, with the settings, data and log in `C:\ProgramData\Rexyra`. An upgrade keeps the folder, the settings and the data; removing the program leaves the settings and the data in place.
+- **A service mode**, `rexyra-server.exe --service`, for running under the Windows service manager without a wrapper. The server reports its progress while it loads and saves, and writes a snapshot before it exits when the service is stopped or Windows shuts down.
+- **`logfile`**, to write the log to a file instead of standard error.
+- **`--create-config <PATH>`**, which writes a starting configuration file from the other options, unless the file exists.
 - A guide to running Rexyra as a Windows service: [docs/WINDOWS-SERVICE.md](https://github.com/moznhub/rexyra/blob/main/docs/WINDOWS-SERVICE.md).
 
 ### Changed
 
 - The log is written without colour codes when it goes to a file or a pipe rather than a terminal, or when `NO_COLOR` is set.
+- The line logged at start-up includes the version.
 
 ## [0.1.0] - 2026-11-20
 
@@ -34,5 +43,6 @@ The first public release: a Redis-compatible in-memory data server for Windows, 
 - Users created with `ACL SETUSER` are not saved across restarts; put them in the configuration file.
 - Everything known to differ from Redis is listed in [docs/COMPATIBILITY.md](https://github.com/moznhub/rexyra/blob/main/docs/COMPATIBILITY.md), and what is not done in [docs/ROADMAP.md](https://github.com/moznhub/rexyra/blob/main/docs/ROADMAP.md).
 
-[Unreleased]: https://github.com/moznhub/rexyra/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/moznhub/rexyra/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/moznhub/rexyra/releases/tag/v0.2.0
 [0.1.0]: https://github.com/moznhub/rexyra/releases/tag/v0.1.0

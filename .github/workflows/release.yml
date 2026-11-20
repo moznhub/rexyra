@@ -58,6 +58,24 @@ jobs:
             Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
           }
 
+      - name: Install WiX
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add -g WixToolset.UI.wixext/5.0.2
+          wix extension add -g WixToolset.Util.wixext/5.0.2
+
+      # The installer is tried out on this machine before it is published:
+      # installed over an earlier version, checked, and removed again.
+      - name: Build and check the installer
+        shell: pwsh
+        run: |
+          $name = "rexyra-${{ github.ref_name }}-windows-x86_64"
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          installer/build.ps1 -Version $version -Server target\dist\release\rexyra-server.exe -Out "$name.msi"
+          installer/build.ps1 -Version 0.0.1 -Server target\dist\release\rexyra-server.exe -Out rexyra-earlier.msi
+          installer/test-installer.ps1 -Msi "$name.msi" -OldMsi rexyra-earlier.msi
+
       - name: Package
         id: package
         shell: pwsh
@@ -69,8 +87,11 @@ jobs:
           Compress-Archive -Path $name -DestinationPath "$name.zip"
           $hash = (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower()
           "$hash  $name.zip" | Out-File -Encoding ascii "$name.zip.sha256"
+          $msiHash = (Get-FileHash "$name.msi" -Algorithm SHA256).Hash.ToLower()
+          "$msiHash  $name.msi" | Out-File -Encoding ascii "$name.msi.sha256"
           "name=$name" >> $env:GITHUB_OUTPUT
           "hash=$hash" >> $env:GITHUB_OUTPUT
+          "msi_hash=$msiHash" >> $env:GITHUB_OUTPUT
 
       - name: Write the release notes
         shell: pwsh
@@ -88,11 +109,17 @@ jobs:
             "",
             "## Download",
             "",
-            "``${{ steps.package.outputs.name }}.zip`` contains ``rexyra-server.exe``, a single self-contained executable for 64-bit Windows 10 and 11, with the licences and documentation.",
+            "For 64-bit Windows 10 and 11:",
             "",
-            "SHA-256: ``${{ steps.package.outputs.hash }}``",
+            "- ``${{ steps.package.outputs.name }}.msi`` is the installer. It asks for the folder and the port, and installs Rexyra as a Windows service.",
+            "- ``${{ steps.package.outputs.name }}.zip`` contains ``rexyra-server.exe``, a single self-contained executable to run yourself, with the licences and documentation.",
             "",
-            "The executable is not code-signed. Windows SmartScreen may ask for confirmation the first time it runs, and some antivirus products flag new unsigned programs on heuristics alone; compare the checksum above with ``Get-FileHash`` if in doubt, or build from source."
+            "| File | SHA-256 |",
+            "|---|---|",
+            "| ``${{ steps.package.outputs.name }}.msi`` | ``${{ steps.package.outputs.msi_hash }}`` |",
+            "| ``${{ steps.package.outputs.name }}.zip`` | ``${{ steps.package.outputs.hash }}`` |",
+            "",
+            "Neither file is code-signed. Windows SmartScreen may ask for confirmation the first time, and some antivirus products flag new unsigned programs on heuristics alone; compare the checksums above with ``Get-FileHash`` if in doubt, or build from source."
           )
           $notes | Out-File -Encoding utf8 release-notes.md
 
@@ -103,6 +130,8 @@ jobs:
         run: |
           $arguments = @(
             "${{ github.ref_name }}",
+            "${{ steps.package.outputs.name }}.msi",
+            "${{ steps.package.outputs.name }}.msi.sha256",
             "${{ steps.package.outputs.name }}.zip",
             "${{ steps.package.outputs.name }}.zip.sha256",
             "--title", "Rexyra ${{ github.ref_name }}",

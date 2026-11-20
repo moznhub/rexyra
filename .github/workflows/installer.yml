@@ -5,7 +5,7 @@ name: Installer
 # which a developer's own machine is not the place to try.
 on:
   push:
-    branches: [main, feature/msi-installer]
+    branches: [main]
   pull_request:
 
 env:
