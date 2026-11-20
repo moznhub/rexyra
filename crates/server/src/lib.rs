@@ -39,6 +39,17 @@ pub async fn serve(
     config: Config,
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()> {
+    serve_with(listener, config, shutdown, || {}).await
+}
+
+/// [`serve`], calling `ready` once the data is loaded and connections are
+/// about to be accepted.
+pub async fn serve_with(
+    listener: TcpListener,
+    config: Config,
+    shutdown: impl Future<Output = ()>,
+    ready: impl FnOnce(),
+) -> io::Result<()> {
     // `CONFIG SET maxclients` changes this while the server runs.
     let maxclients = Arc::new(AtomicUsize::new(config.maxclients));
     let mut server = Server::default();
@@ -134,6 +145,7 @@ pub async fn serve(
     let mut maintenance = tokio::time::interval(Duration::from_millis(100));
     maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    ready();
     loop {
         let (mut stream, addr) = tokio::select! {
             _ = &mut shutdown => {

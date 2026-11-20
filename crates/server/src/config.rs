@@ -22,6 +22,8 @@ pub struct Config {
     /// directory by default).
     pub dir: String,
     pub dbfilename: String,
+    /// The file the log is written to; empty for standard error.
+    pub logfile: String,
     /// The append-only file; see [`AofSettings`].
     pub aof: AofSettings,
     /// Automatic saves as `(seconds, changes)` pairs; see `save` in Redis.
@@ -63,6 +65,7 @@ impl Default for Config {
             busy_reply_threshold: 5_000,
             dir: ".".to_owned(),
             dbfilename: "dump.rdb".to_owned(),
+            logfile: String::new(),
             aof: AofSettings::default(),
             save_points: vec![(3600, 1), (300, 100), (60, 10_000)],
             save_given: false,
@@ -85,6 +88,8 @@ impl Default for Config {
 #[derive(Debug, PartialEq, Eq)]
 pub enum ArgsOutcome {
     Run(Config),
+    /// `--create-config PATH`: write the configuration to that file and exit.
+    CreateConfig(String, Config),
     Help,
     Version,
 }
@@ -134,6 +139,12 @@ Options:
                                     volatile-ttl                  [default: noeviction]
   --dir <PATH>                      Directory of the snapshot     [default: .]
   --dbfilename <NAME>               File name of the snapshot     [default: dump.rdb]
+  --logfile <PATH>                  File the log is written to    [default: standard error]
+  --service                         Run under the Windows service manager. For
+                                    a service's command line, not a terminal
+  --create-config <PATH>            Write a configuration file holding the
+                                    other options to PATH, unless that file
+                                    exists, and exit
   -h, --help                        Print this help
   -v, --version                     Print the version
 ";
@@ -305,6 +316,7 @@ impl Config {
                 }
             }
             "dir" => self.dir = single()?.to_owned(),
+            "logfile" => self.logfile = single()?.to_owned(),
             "dbfilename" => {
                 let value = single()?;
                 if value.contains(['/', '\\']) {
@@ -353,10 +365,28 @@ impl Config {
         S: AsRef<str>,
     {
         let mut config = Config::default();
-        let mut args = args.into_iter().peekable();
+        // `--service` says how the process is run, not how the server is
+        // set up; `main` looks for it. `--create-config` takes the path of
+        // the file to write. Either may come before the configuration file.
+        let mut create = None;
+        let mut rest = Vec::new();
+        let mut given = args.into_iter();
+        while let Some(arg) = given.next() {
+            match arg.as_ref() {
+                "--service" => {}
+                "--create-config" => {
+                    let path = given.next().ok_or_else(|| {
+                        ArgsError("option '--create-config' needs a value".to_owned())
+                    })?;
+                    create = Some(path.as_ref().to_owned());
+                }
+                other => rest.push(other.to_owned()),
+            }
+        }
+        let mut args = rest.into_iter().peekable();
 
-        if let Some(path) = args.next_if(|arg| !arg.as_ref().starts_with('-')) {
-            let path = path.as_ref();
+        if let Some(path) = args.next_if(|arg| !arg.starts_with('-')) {
+            let path = path.as_str();
             let text = std::fs::read_to_string(path)
                 .map_err(|e| ArgsError(format!("cannot read config file '{path}': {e}")))?;
             config.apply_file(&text)?;
@@ -364,7 +394,7 @@ impl Config {
         }
 
         while let Some(flag) = args.next() {
-            let flag = flag.as_ref();
+            let flag = flag.as_str();
             match flag {
                 "-h" | "--help" => return Ok(ArgsOutcome::Help),
                 "-v" | "--version" => return Ok(ArgsOutcome::Version),
@@ -376,7 +406,7 @@ impl Config {
             let value = args
                 .next()
                 .ok_or_else(|| ArgsError(format!("option '{flag}' needs a value")))?;
-            match config.apply(name, &[value.as_ref().to_owned()]) {
+            match config.apply(name, &[value]) {
                 Ok(true) => {}
                 Ok(false) => return Err(ArgsError(format!("unknown option '{flag}'"))),
                 Err(why) => {
@@ -386,13 +416,188 @@ impl Config {
                 }
             }
         }
-        Ok(ArgsOutcome::Run(config))
+        Ok(match create {
+            Some(path) => ArgsOutcome::CreateConfig(path, config),
+            None => ArgsOutcome::Run(config),
+        })
+    }
+
+    /// The text of a configuration file that starts a server set up like
+    /// this one: the settings an installation chooses, written out, and the
+    /// ones worth knowing about as comments.
+    pub fn starter_file(&self) -> String {
+        let mut text = String::from(
+            "# Rexyra configuration.\n\
+             #\n\
+             # Restart the server (or the Rexyra service) after changing this file.\n\
+             # Every setting is described at https://github.com/moznhub/rexyra#configuration\n\
+             #\n\
+             # A path with spaces goes in single quotes: dir 'C:\\My Data\\rexyra'\n\
+             # Inside double quotes a backslash starts an escape, as in redis.conf.\n\
+             \n\
+             # The address and port to listen on. 127.0.0.1 accepts connections from\n\
+             # this machine only; 0.0.0.0 accepts them on every network interface.\n",
+        );
+        text.push_str(&format!(
+            "bind {}\nport {}\n",
+            quoted(&self.bind),
+            self.port
+        ));
+        text.push_str(
+            "\n\
+             # A password clients must give with AUTH. Without one, connections from\n\
+             # other machines are refused whatever 'bind' says.\n",
+        );
+        if self.requirepass.is_empty() {
+            text.push_str("# requirepass a-long-random-password\n");
+        } else {
+            text.push_str(&format!("requirepass {}\n", quoted(&self.requirepass)));
+        }
+        text.push_str("\n# The folder the data files are kept in.\n");
+        text.push_str(&format!("dir {}\n", quoted(&self.dir)));
+        text.push_str(
+            "\n# The file the log is written to. Without one it goes to standard error.\n",
+        );
+        if self.logfile.is_empty() {
+            text.push_str("# logfile rexyra.log\n");
+        } else {
+            text.push_str(&format!("logfile {}\n", quoted(&self.logfile)));
+        }
+        text.push_str(
+            "\n\
+             # Besides the snapshots, log every change to an append-only file, so that\n\
+             # a crash or a power cut loses at most about a second of changes.\n",
+        );
+        text.push_str(if self.aof.enabled {
+            "appendonly yes\n"
+        } else {
+            "# appendonly yes\n"
+        });
+        text.push_str(
+            "\n\
+             # A limit on the memory used for data, and what to remove when it is\n\
+             # reached. Without a limit the server takes what it is given.\n",
+        );
+        if self.maxmemory == 0 {
+            text.push_str("# maxmemory 2gb\n# maxmemory-policy allkeys-lru\n");
+        } else {
+            text.push_str(&format!(
+                "maxmemory {}\nmaxmemory-policy {}\n",
+                self.maxmemory,
+                self.maxmemory_policy.name()
+            ));
+        }
+        text
+    }
+}
+
+/// One value as a configuration file takes it: bare where that is safe,
+/// otherwise in single quotes, which are literal, or in double quotes with
+/// escapes when the value itself holds a single quote.
+fn quoted(value: &str) -> String {
+    let bare = !value.is_empty()
+        && !value.starts_with('#')
+        && !value.contains(|c: char| c.is_whitespace() || c == '"' || c == '\'');
+    if bare {
+        value.to_owned()
+    } else if !value.contains('\'') {
+        format!("'{value}'")
+    } else {
+        let mut out = String::from("\"");
+        for c in value.chars() {
+            match c {
+                '\\' | '"' => out.extend(['\\', c]),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+        out
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_and_create_config_are_not_settings() {
+        // `--service` is for `main`; it may come before the file or after.
+        assert_eq!(
+            Config::from_args(["--service", "--port", "7000"]),
+            Config::from_args(["--port", "7000", "--service"]),
+        );
+        let Ok(ArgsOutcome::Run(config)) = Config::from_args(["--service", "--port", "7000"])
+        else {
+            panic!("expected a configuration");
+        };
+        assert_eq!(config.port, 7000);
+
+        let outcome =
+            Config::from_args(["--create-config", "C:\\x\\rexyra.conf", "--port", "7000"]);
+        let Ok(ArgsOutcome::CreateConfig(path, config)) = outcome else {
+            panic!("expected a file to create: {outcome:?}");
+        };
+        assert_eq!(path, "C:\\x\\rexyra.conf");
+        assert_eq!(config.port, 7000);
+        assert_eq!(
+            Config::from_args(["--create-config"])
+                .unwrap_err()
+                .to_string(),
+            "option '--create-config' needs a value"
+        );
+    }
+
+    #[test]
+    fn a_starter_file_reads_back_as_the_same_settings() {
+        let cases = [
+            Config::default(),
+            Config {
+                bind: "0.0.0.0".to_owned(),
+                port: 6400,
+                dir: "C:\\ProgramData\\Rexyra\\data".to_owned(),
+                logfile: "C:\\ProgramData\\Rexyra\\logs\\rexyra.log".to_owned(),
+                ..Config::default()
+            },
+            // Spaces, a quote of each kind, and a value that looks like a comment.
+            Config {
+                dir: "D:\\My Data\\rexyra".to_owned(),
+                logfile: "D:\\Bob's \"logs\"\\rexyra.log".to_owned(),
+                requirepass: "#not a comment".to_owned(),
+                maxmemory: 2 << 30,
+                maxmemory_policy: Policy::AllKeysLru,
+                aof: AofSettings {
+                    enabled: true,
+                    ..AofSettings::default()
+                },
+                ..Config::default()
+            },
+        ];
+        for config in cases {
+            let text = config.starter_file();
+            let mut read = Config::default();
+            read.apply_file(&text)
+                .unwrap_or_else(|e| panic!("{e}\n{text}"));
+            assert_eq!(read, config, "{text}");
+        }
+        // Paths without spaces stay as they are typed.
+        let text = cases_text();
+        assert!(
+            text.contains("\ndir C:\\ProgramData\\Rexyra\\data\n"),
+            "{text}"
+        );
+        assert!(text.contains("\n# appendonly yes\n"), "{text}");
+    }
+
+    fn cases_text() -> String {
+        Config {
+            dir: "C:\\ProgramData\\Rexyra\\data".to_owned(),
+            ..Config::default()
+        }
+        .starter_file()
+    }
 
     #[test]
     fn defaults() {
@@ -458,6 +663,7 @@ mod tests {
                  lua-time-limit 250\n\
                  dir \"data dir\"\n\
                  dbfilename snap.rdb\n\
+                 logfile C:\\logs\\rexyra.log\n\
                  save 900 1\n\
                  save 30 5\n\
                  appendonly yes\n\
@@ -485,6 +691,7 @@ mod tests {
                 busy_reply_threshold: 250,
                 dir: "data dir".to_owned(),
                 dbfilename: "snap.rdb".to_owned(),
+                logfile: r"C:\logs\rexyra.log".to_owned(),
                 aof: AofSettings {
                     enabled: true,
                     fsync: Fsync::Always,

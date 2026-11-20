@@ -16,5 +16,8 @@ rexyra-resp.workspace = true
 rexyra-engine.workspace = true
 rexyra-commands.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.8"
+
 [lints]
 workspace = true

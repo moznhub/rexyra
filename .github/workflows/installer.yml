@@ -1,0 +1,33 @@
+name: Installer
+
+# Sets the server up as a Windows service on a clean machine, by hand and
+# with the MSI, and checks that it behaves: both install a real service,
+# which a developer's own machine is not the place to try.
+on:
+  push:
+    branches: [main, feature/msi-installer]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  service:
+    name: Windows service and installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: dist
+
+      # As the release does: the C runtime is linked in.
+      - name: Build
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release -p rexyra-server --target-dir target/dist
+
+      - name: Set up as a service by hand, as the guide describes
+        shell: pwsh
+        run: installer/test-manual-service.ps1 -Server target\dist\release\rexyra-server.exe
