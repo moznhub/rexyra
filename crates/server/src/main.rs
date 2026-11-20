@@ -1,35 +1,145 @@
-use std::io::IsTerminal;
+use std::fs::OpenOptions;
+use std::future::Future;
+use std::io::{IsTerminal, Write};
+use std::path::Path;
 use std::process::ExitCode;
+use std::sync::Mutex;
 
 use rexyra_server::config::{ArgsOutcome, Config, USAGE};
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
+#[cfg(windows)]
+mod service;
+
 fn main() -> ExitCode {
-    let config = match Config::from_args(std::env::args().skip(1)) {
-        Ok(ArgsOutcome::Run(config)) => config,
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let as_service = args.iter().any(|arg| arg == "--service");
+    let parsed = Config::from_args(&args);
+
+    if as_service {
+        // Under the service manager there is no terminal to print to, so
+        // even a mistake in the configuration is reported through it.
+        let config = match parsed {
+            Ok(ArgsOutcome::Run(config)) => Ok(config),
+            Ok(_) => Err("--service cannot be combined with that option".to_owned()),
+            Err(e) => Err(e.to_string()),
+        };
+        #[cfg(windows)]
+        return service::run(config, config_file(&args));
+        #[cfg(not(windows))]
+        {
+            let _ = config;
+            eprintln!("rexyra-server: --service is for Windows");
+            return ExitCode::from(2);
+        }
+    }
+
+    match parsed {
+        Ok(ArgsOutcome::Run(config)) => {
+            let shutdown = async {
+                let _ = tokio::signal::ctrl_c().await;
+                info!("Ctrl+C received, shutting down");
+            };
+            match run(config, shutdown, || {}) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(_) => ExitCode::FAILURE,
+            }
+        }
+        Ok(ArgsOutcome::CreateConfig(path, config)) => create_config(&path, &config),
         Ok(ArgsOutcome::Help) => {
             print!("{USAGE}");
-            return ExitCode::SUCCESS;
+            ExitCode::SUCCESS
         }
         Ok(ArgsOutcome::Version) => {
             println!("rexyra-server {}", env!("CARGO_PKG_VERSION"));
-            return ExitCode::SUCCESS;
+            ExitCode::SUCCESS
         }
         Err(e) => {
             eprintln!("rexyra-server: {e}\n\n{USAGE}");
-            return ExitCode::from(2);
+            ExitCode::from(2)
         }
-    };
+    }
+}
 
-    // Colour is for someone watching a terminal; a log file gets plain text.
-    let colour = std::io::stderr().is_terminal()
-        && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty());
+/// The configuration file named on the command line, if there is one: the
+/// first argument, once `--service` is set aside, unless it is an option.
+#[cfg(windows)]
+fn config_file(args: &[String]) -> Option<std::path::PathBuf> {
+    args.iter()
+        .find(|arg| *arg != "--service")
+        .filter(|arg| !arg.starts_with('-'))
+        .map(std::path::PathBuf::from)
+}
+
+/// `--create-config`: writes a starting configuration file, leaving one
+/// that is already there alone so that an upgrade keeps what was changed.
+fn create_config(path: &str, config: &Config) -> ExitCode {
+    let path = Path::new(path);
+    if path.exists() {
+        println!("{} exists and was left as it is", path.display());
+        return ExitCode::SUCCESS;
+    }
+    let written = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(path, config.starter_file()));
+    match written {
+        Ok(()) => {
+            println!("wrote {}", path.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("rexyra-server: cannot write '{}': {e}", path.display());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Where the log goes: the file named by `logfile`, or standard error.
+fn start_logging(config: &Config) -> Result<(), String> {
+    if config.logfile.is_empty() {
+        // Colour is for someone watching a terminal; a pipe gets plain text.
+        let colour = std::io::stderr().is_terminal()
+            && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty());
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_ansi(colour)
+            .with_target(false)
+            .init();
+        return Ok(());
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&config.logfile)
+        .map_err(|e| format!("cannot open the log file '{}': {e}", config.logfile))?;
+    // A blank line sets one run apart from the one before.
+    if file.metadata().is_ok_and(|meta| meta.len() > 0) {
+        let _ = file.write_all(b"\n");
+    }
     tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_ansi(colour)
+        .with_writer(Mutex::new(file))
+        .with_ansi(false)
         .with_target(false)
         .init();
+    Ok(())
+}
+
+/// Runs the server until `shutdown` completes or a client sends SHUTDOWN.
+/// `ready` is called once the data is loaded and connections are accepted.
+/// An error is the reason the server could not start or stopped; it has
+/// been written to the log, or to standard error if there is no log yet.
+fn run(
+    config: Config,
+    shutdown: impl Future<Output = ()>,
+    ready: impl FnOnce(),
+) -> Result<(), String> {
+    if let Err(why) = start_logging(&config) {
+        eprintln!("rexyra-server: {why}");
+        return Err(why);
+    }
 
     if !config.ignored.is_empty() {
         warn!(
@@ -38,44 +148,34 @@ fn main() -> ExitCode {
         );
     }
 
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("io")
         .build()
-    {
-        Ok(runtime) => runtime,
-        Err(e) => {
+        .map_err(|e| {
             error!(error = %e, "could not start the I/O runtime");
-            return ExitCode::FAILURE;
-        }
-    };
+            format!("could not start the I/O runtime: {e}")
+        })?;
 
     runtime.block_on(async move {
         let endpoint = (config.bind.as_str(), config.port);
-        let listener = match TcpListener::bind(endpoint).await {
-            Ok(listener) => listener,
-            Err(e) => {
-                error!(bind = %config.bind, port = config.port, error = %e, "could not listen");
-                return ExitCode::FAILURE;
-            }
-        };
+        let listener = TcpListener::bind(endpoint).await.map_err(|e| {
+            error!(bind = %config.bind, port = config.port, error = %e, "could not listen");
+            format!("could not listen on {}:{}: {e}", config.bind, config.port)
+        })?;
         info!(
+            version = env!("CARGO_PKG_VERSION"),
             bind = %config.bind,
             port = config.port,
             pid = std::process::id(),
             "ready to accept connections"
         );
 
-        let shutdown = async {
-            let _ = tokio::signal::ctrl_c().await;
-            info!("Ctrl+C received, shutting down");
-        };
-        match rexyra_server::serve(listener, config, shutdown).await {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
+        rexyra_server::serve_with(listener, config, shutdown, ready)
+            .await
+            .map_err(|e| {
                 error!(error = %e, "server stopped");
-                ExitCode::FAILURE
-            }
-        }
+                format!("server stopped: {e}")
+            })
     })
 }
