@@ -23,7 +23,7 @@ The same for every item below, so it is not repeated:
 
 ## 0.2.0: loose ends
 
-Version 0.2.0 added the service mode, the installer, the public-domain licence and the third-party notices. What it left to tidy up:
+Version 0.2.0 added the service mode, the installer, and the third-party notices. What it left to tidy up:
 
 | | Item | Done when |
 |---|---|---|

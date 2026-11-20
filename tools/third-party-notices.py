@@ -2,7 +2,7 @@
 
 Usage: python tools/third-party-notices.py OUTPUT_FILE
 
-Rexyra itself is in the public domain, but the program contains other
+Rexyra itself is licensed under Apache-2.0, but the program contains other
 people's code, and their licences ask for their notices to accompany it.
 This collects them: every crate the server links on Windows, from
 `cargo metadata`, with the licence files each one ships, and the Lua
@@ -88,7 +88,7 @@ def main():
     out = [
         "THIRD-PARTY NOTICES",
         "",
-        "Rexyra is released into the public domain (see LICENSE). The program",
+        "Rexyra is licensed under the Apache License, Version 2.0 (see LICENSE). The program",
         "rexyra-server.exe also contains the libraries listed below, which remain",
         "under their own licences. Their notices follow.",
         "",
