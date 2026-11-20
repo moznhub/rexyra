@@ -4,6 +4,10 @@ All notable changes to Rexyra are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Changed
+
+- **Licence.** Rexyra is licensed under MIT or Apache-2.0 again, at your option, instead of The Unlicense. Version 0.2.0 was released into the public domain and stays that way; later versions are under MIT or Apache-2.0.
+
 ## [0.2.0] - 2026-11-21
 
 Rexyra can now be installed as a Windows service.

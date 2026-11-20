@@ -82,7 +82,7 @@ jobs:
         run: |
           $name = "rexyra-${{ github.ref_name }}-windows-x86_64"
           New-Item -ItemType Directory $name | Out-Null
-          Copy-Item target\dist\release\rexyra-server.exe, README.md, CHANGELOG.md, LICENSE, target\THIRD-PARTY-NOTICES.txt $name
+          Copy-Item target\dist\release\rexyra-server.exe, README.md, CHANGELOG.md, LICENSE-MIT, LICENSE-APACHE, target\THIRD-PARTY-NOTICES.txt $name
           Copy-Item docs\COMPATIBILITY.md, docs\WINDOWS-SERVICE.md $name
           Compress-Archive -Path $name -DestinationPath "$name.zip"
           $hash = (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower()
@@ -112,7 +112,7 @@ jobs:
             "For 64-bit Windows 10 and 11:",
             "",
             "- ``${{ steps.package.outputs.name }}.msi`` is the installer. It asks for the folder and the port, and installs Rexyra as a Windows service.",
-            "- ``${{ steps.package.outputs.name }}.zip`` contains ``rexyra-server.exe``, a single self-contained executable to run yourself, with the licence, the notices of the libraries it contains, and documentation.",
+            "- ``${{ steps.package.outputs.name }}.zip`` contains ``rexyra-server.exe``, a single self-contained executable to run yourself, with the licences, the notices of the libraries it contains, and documentation.",
             "",
             "| File | SHA-256 |",
             "|---|---|",
