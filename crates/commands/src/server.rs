@@ -80,6 +80,12 @@ pub struct Server {
     pub loopback_only: Arc<std::sync::atomic::AtomicBool>,
     /// Who may run `DEBUG`; fixed at start-up, as in Redis.
     pub enable_debug_command: crate::DebugCommand,
+    /// The keyspace notifications to publish (`notify-keyspace-events`),
+    /// as [`crate::notify`] flags. Zero, the default, publishes none.
+    pub notify_flags: u32,
+    /// Whether the periodic tick deletes keys whose TTL has passed. Only
+    /// `DEBUG SET-ACTIVE-EXPIRE` turns it off, for tests.
+    pub active_expire: bool,
 
     // --- identity -----------------------------------------------------------
     /// Milliseconds since the Unix epoch at start-up.
@@ -172,6 +178,8 @@ impl Default for Server {
             protected_mode: true,
             loopback_only: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             enable_debug_command: crate::DebugCommand::No,
+            notify_flags: 0,
+            active_expire: true,
             started_at: 0,
             run_id: new_run_id(),
             stats: Stats::default(),

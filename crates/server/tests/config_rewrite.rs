@@ -137,6 +137,7 @@ fn settings_survive_a_restart_through_the_file() {
         &["CONFIG", "SET", "maxmemory-policy", "allkeys-lru"],
         &["ACL", "SETUSER", "bob", "on", ">bob's pw", "~k*", "+get"],
         &["CONFIG", "SET", "requirepass", "two words"],
+        &["CONFIG", "SET", "notify-keyspace-events", "Elx$"],
     ] {
         assert_eq!(client.run(command), ["+OK"], "{command:?}");
     }
@@ -148,6 +149,7 @@ fn settings_survive_a_restart_through_the_file() {
         text.contains("\nsave 60 5\n") && text.contains("\nsave 10 1\n"),
         "{text}"
     );
+    assert!(text.contains("\nnotify-keyspace-events $lxE\n"), "{text}");
 
     let (_server, mut client) = start(&config, port);
     assert_eq!(client.run(&["AUTH", "two words"]), ["+OK"], "{text}");
@@ -156,6 +158,7 @@ fn settings_survive_a_restart_through_the_file() {
         ("maxmemory-policy", "allkeys-lru"),
         ("save", "60 5 10 1"),
         ("busy-reply-threshold", "4000"),
+        ("notify-keyspace-events", "$lxE"),
     ] {
         assert_eq!(
             client.run(&["CONFIG", "GET", name]),

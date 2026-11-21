@@ -4,6 +4,7 @@ use bytes::Bytes;
 use rexyra_engine::{glob_match, Db, Hash, Value};
 use rexyra_resp::{parse_i64, Frame, Protocol};
 
+use crate::notify::{notify, GENERIC, HASH};
 use crate::strings::parse_float;
 use crate::{
     copied, int, is, parse_cursor, parse_scan_options, reply, sample_distinct, wrong_arity,
@@ -62,10 +63,12 @@ fn set_fields(ctx: &mut Ctx<'_>, args: &[Bytes], command: &str) -> Result<usize,
     }
     let (db, now) = ctx.db();
     let hash = hash_or_create(db, &args[1], now)?;
-    Ok(pairs
+    let added = pairs
         .iter()
         .filter(|[field, value]| hash.insert(field, copied(value)))
-        .count())
+        .count();
+    notify(ctx, HASH, "hset", &args[1]);
+    Ok(added)
 }
 
 /// `HSET key field value [field value ...]` — replies with the number of
@@ -88,6 +91,7 @@ pub(crate) fn hsetnx(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
             return Ok(Frame::Integer(0));
         }
         hash.insert(&args[2], copied(&args[3]));
+        notify(ctx, HASH, "hset", &args[1]);
         Ok(Frame::Integer(1))
     })())
 }
@@ -101,8 +105,13 @@ pub(crate) fn hdel(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
         let removed = args[2..].iter().filter(|field| hash.remove(field)).count();
         if removed == 0 {
             db.unchanged(&args[1]);
+            return Ok(Frame::Integer(0));
         }
-        db.remove_if_empty(&args[1], now);
+        let emptied = db.remove_if_empty(&args[1], now);
+        notify(ctx, HASH, "hdel", &args[1]);
+        if emptied {
+            notify(ctx, GENERIC, "del", &args[1]);
+        }
         Ok(Frame::Integer(removed as i64))
     })())
 }
@@ -133,6 +142,7 @@ pub(crate) fn hincrby(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
             .checked_add(delta)
             .ok_or_else(|| Frame::error("ERR increment or decrement would overflow"))?;
         store_field(ctx, args, Bytes::from(updated.to_string()))?;
+        notify(ctx, HASH, "hincrby", &args[1]);
         Ok(Frame::Integer(updated))
     })())
 }
@@ -159,6 +169,7 @@ pub(crate) fn hincrbyfloat(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
         store_field(ctx, args, text.clone())?;
         // Logged as its result: another server might round differently.
         ctx.log_instead(|| vec![crate::aof::command(&[b"HSET", &args[1], &args[2], &text])]);
+        notify(ctx, HASH, "hincrbyfloat", &args[1]);
         Ok(Frame::Bulk(text))
     })())
 }

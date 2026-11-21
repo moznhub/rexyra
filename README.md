@@ -70,6 +70,7 @@ rexyra-server.exe rexyra.conf --port 7000
 | `--save` | Automatic snapshots, as `seconds changes` pairs | `3600 1 300 100 60 10000` |
 | `--appendonly`, `--appendfsync` | The append-only file and when it is forced to disk | `no`, `everysec` |
 | `--maxmemory`, `--maxmemory-policy` | Memory limit and what to evict at the limit | none, `noeviction` |
+| `--notify-keyspace-events` | Keyspace notifications to publish, in Redis's letters (`KEA` for all); see [COMPATIBILITY.md](docs/COMPATIBILITY.md#keyspace-notifications) | none |
 | `--databases`, `--maxclients` | Number of databases and of simultaneous clients | `16`, `10000` |
 
 Run `rexyra-server.exe --help` for the full list. Many settings can also be changed while the server runs with `CONFIG SET`, and `CONFIG REWRITE` saves them, with any users made with `ACL SETUSER`, to the configuration file for the next start. Directives in a configuration file that Rexyra does not support are skipped with a warning, so an existing `redis.conf` is a reasonable starting point.
@@ -98,8 +99,8 @@ msiexec /i rexyra-vX.Y.Z-windows-x86_64.msi /qn PORT=6380 INSTALLFOLDER="D:\Rexy
 | Group | Commands |
 |-------|----------|
 | Connection | `PING` `ECHO` `HELLO` `AUTH` `SELECT` `QUIT` `RESET` `CLIENT` (`ID`, `GETNAME`, `SETNAME`, `SETINFO`, `LIST`, `INFO`, `KILL`, `UNBLOCK`, `NO-EVICT`, `NO-TOUCH`) |
-| Server | `COMMAND` (`COUNT`, `LIST`, `INFO`, `DOCS`, `GETKEYS`) `DBSIZE` `SWAPDB` `FLUSHDB` `FLUSHALL` `INFO` `CONFIG` (`GET`, `SET`, `RESETSTAT`) `SLOWLOG` (`GET`, `LEN`, `RESET`) `MEMORY` (`USAGE`) `ACL` (`SETUSER`, `GETUSER`, `DELUSER`, `LIST`, `USERS`, `WHOAMI`, `CAT`, `GENPASS`, `DRYRUN`) `TIME` `SAVE` `LASTSAVE` `SHUTDOWN` `BGSAVE` `BGREWRITEAOF` `DEBUG` (`PANIC`) |
-| Pub/Sub | `SUBSCRIBE` `UNSUBSCRIBE` `PSUBSCRIBE` `PUNSUBSCRIBE` `SSUBSCRIBE` `SUNSUBSCRIBE` `PUBLISH` `SPUBLISH` `PUBSUB` (`CHANNELS`, `NUMSUB`, `NUMPAT`, `SHARDCHANNELS`, `SHARDNUMSUB`, `HELP`) |
+| Server | `COMMAND` (`COUNT`, `LIST`, `INFO`, `DOCS`, `GETKEYS`) `DBSIZE` `SWAPDB` `FLUSHDB` `FLUSHALL` `INFO` `CONFIG` (`GET`, `SET`, `RESETSTAT`) `SLOWLOG` (`GET`, `LEN`, `RESET`) `MEMORY` (`USAGE`) `ACL` (`SETUSER`, `GETUSER`, `DELUSER`, `LIST`, `USERS`, `WHOAMI`, `CAT`, `GENPASS`, `DRYRUN`) `TIME` `SAVE` `LASTSAVE` `SHUTDOWN` `BGSAVE` `BGREWRITEAOF` `DEBUG` (`PANIC`, `SET-ACTIVE-EXPIRE`) |
+| Pub/Sub | `SUBSCRIBE` `UNSUBSCRIBE` `PSUBSCRIBE` `PUNSUBSCRIBE` `SSUBSCRIBE` `SUNSUBSCRIBE` `PUBLISH` `SPUBLISH` `PUBSUB` (`CHANNELS`, `NUMSUB`, `NUMPAT`, `SHARDCHANNELS`, `SHARDNUMSUB`, `HELP`), and keyspace notifications (`notify-keyspace-events`) |
 | Transactions | `MULTI` `EXEC` `DISCARD` `WATCH` `UNWATCH` |
 | Scripting | `EVAL` `EVALSHA` `EVAL_RO` `EVALSHA_RO` `SCRIPT` (`LOAD`, `EXISTS`, `FLUSH`, `KILL`) `FCALL` `FCALL_RO` `FUNCTION` (`LOAD`, `DELETE`, `FLUSH`, `LIST`, `STATS`, `KILL`, `DUMP`, `RESTORE`) |
 | Keys | `DEL` `UNLINK` `EXISTS` `TOUCH` `TYPE` `RENAME` `RENAMENX` `COPY` `MOVE` `KEYS` `SCAN` `RANDOMKEY` `SORT` `SORT_RO` `DUMP` `RESTORE` `OBJECT` (`ENCODING`, `REFCOUNT`, `IDLETIME`, `FREQ`) |
@@ -158,7 +159,8 @@ cargo +nightly fuzz run frame
 | `crates/persist` | The RDB snapshot format: writer, reader, checksum |
 | `crates/commands` | Command table and handlers, persistence, eviction, scripting, users and permissions |
 | `crates/server` | Networking, the command-execution thread, configuration, the `rexyra-server` binary |
-| `tools/rexyra-bench` | Load generator for measuring background saves under traffic |
+| `tools/rexyra-bench` | Load generator for measuring background saves under traffic, and the throughput of single commands |
+| `tools/rexyra-keyevents` | Records the keyspace notifications a script of commands produces, to compare with Redis |
 | `fuzz` | cargo-fuzz targets for the protocol crate |
 | `docs` | Compatibility notes, roadmap, design notes, benchmarks |
 

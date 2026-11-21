@@ -17,6 +17,7 @@ use bytes::Bytes;
 use rexyra_engine::{Db, SetTtl, Value};
 use rexyra_resp::Frame;
 
+use crate::notify::{self, notify, GENERIC, LIST};
 use crate::{int, is, reply, wrong_type, Ctx, ERR_SYNTAX};
 
 const ERR_NOT_DOUBLE: &str = "ERR One or more scores can't be converted into double";
@@ -87,7 +88,7 @@ fn parse(mut rest: &[Bytes], read_only: bool) -> Result<Options<'_>, Frame> {
 /// name. A pattern of the form `key*->field` reads a hash field; otherwise
 /// the key must hold a string. `#` stands for the element itself. `None` if
 /// the pattern has no `*`, or the key or field is missing or of another type.
-fn lookup(db: &Db, pattern: &[u8], element: &Bytes, now: u64) -> Option<Bytes> {
+fn lookup(db: &mut Db, pattern: &[u8], element: &Bytes, now: u64) -> Option<Bytes> {
     if pattern == b"#" {
         return Some(element.clone());
     }
@@ -99,7 +100,9 @@ fn lookup(db: &Db, pattern: &[u8], element: &Bytes, now: u64) -> Option<Bytes> {
         _ => (after, None),
     };
     let key = [prefix, &element[..], postfix].concat();
-    match (db.peek(&key, now)?, field) {
+    // A real lookup, as in Redis: an expired key goes, a missing one is a
+    // `keymiss`.
+    match (db.get(&key, now)?, field) {
         (Value::Hash(hash), Some(field)) => hash.get(field).cloned(),
         (Value::String(value), None) => Some(value.clone()),
         _ => None,
@@ -225,24 +228,29 @@ fn sorted_elements(
 fn run(ctx: &mut Ctx<'_>, args: &[Bytes], read_only: bool) -> Frame {
     reply((|| {
         let options = parse(&args[2..], read_only)?;
+        // Everything but the destination is read as `GET` reads: missing
+        // keys are `keymiss` events.
+        notify::reading(ctx, true);
         let (db, now) = ctx.db();
-        let elements = sorted_elements(db, &args[1], now, &options)?;
-
-        // One value per element, or one per element per `GET`.
-        let output: Vec<Option<Bytes>> = if options.gets.is_empty() {
-            elements.into_iter().map(Some).collect()
-        } else {
-            elements
-                .iter()
-                .flat_map(|element| {
-                    options
-                        .gets
-                        .iter()
-                        .map(|pattern| lookup(db, pattern, element, now))
-                        .collect::<Vec<_>>()
-                })
-                .collect()
-        };
+        let output = sorted_elements(db, &args[1], now, &options).map(|elements| {
+            // One value per element, or one per element per `GET`.
+            if options.gets.is_empty() {
+                elements.into_iter().map(Some).collect::<Vec<_>>()
+            } else {
+                elements
+                    .iter()
+                    .flat_map(|element| {
+                        options
+                            .gets
+                            .iter()
+                            .map(|pattern| lookup(db, pattern, element, now))
+                            .collect::<Vec<_>>()
+                    })
+                    .collect()
+            }
+        });
+        notify::reading(ctx, false);
+        let output = output?;
 
         let Some(destination) = options.store else {
             return Ok(Frame::Array(
@@ -253,12 +261,16 @@ fn run(ctx: &mut Ctx<'_>, args: &[Bytes], read_only: bool) -> Frame {
             ));
         };
         let stored = output.len() as i64;
+        let (db, now) = ctx.db();
         if output.is_empty() {
-            db.remove(destination, now);
+            if db.remove(destination, now) {
+                notify(ctx, GENERIC, "del", destination);
+            }
         } else {
             // A list cannot hold null, so a missing value is stored empty.
             let list: VecDeque<Bytes> = output.into_iter().map(Option::unwrap_or_default).collect();
             db.set(destination, Value::List(list), SetTtl::Clear, now);
+            notify(ctx, LIST, "sortstore", destination);
         }
         Ok(Frame::Integer(stored))
     })())

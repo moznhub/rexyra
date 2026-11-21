@@ -8,6 +8,19 @@ use crate::hash::Hash;
 use crate::set::Set;
 use crate::zset::ZSet;
 
+/// Something that happened to a key as a side effect of looking it up or
+/// writing it, recorded (when asked for) for keyspace notifications and the
+/// append-only file; see [`Db::take_notes`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Note {
+    /// The key was deleted because its TTL had passed.
+    Expired,
+    /// A read found no such key (Redis's `keymiss`).
+    Missed,
+    /// The key was created (Redis's `new`).
+    Created,
+}
+
 /// A stored value.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -183,11 +196,13 @@ pub struct Db {
     /// Watched keys handed out for writing since the last
     /// [`Db::settle_watches`].
     pending: Vec<Bytes>,
-    /// Whether to record expired keys in `expired`.
+    /// Whether to record expired keys, lookups that find nothing, and
+    /// created keys in `notes`.
     track_expired: bool,
-    /// Keys deleted because their TTL passed, since the last
-    /// [`Db::take_expired`].
-    expired: Vec<Bytes>,
+    note_misses: bool,
+    note_created: bool,
+    /// What happened to keys since the last [`Db::take_notes`], in order.
+    notes: Vec<(Note, Bytes)>,
     /// How quickly the access-frequency counter saturates (higher: slower)
     /// and after how many unused minutes it drops by one.
     lfu_log_factor: u32,
@@ -521,17 +536,41 @@ impl Db {
 
     /// Turns recording of expired keys on or off. The append-only file needs
     /// to know when a key is deleted by its TTL, because on replay nothing
-    /// expires by itself: the log says when each key went.
+    /// expires by itself: the log says when each key went. So do keyspace
+    /// notifications.
     pub fn track_expired(&mut self, on: bool) {
         self.track_expired = on;
         if !on {
-            self.expired.clear();
+            self.notes.retain(|(note, _)| *note != Note::Expired);
         }
     }
 
-    /// The keys deleted by expiry since the last call, in order.
-    pub fn take_expired(&mut self) -> Vec<Bytes> {
-        std::mem::take(&mut self.expired)
+    /// Turns recording of lookups that find no key on or off. The commands
+    /// layer turns it on around the lookups Redis counts as reads.
+    pub fn note_misses(&mut self, on: bool) {
+        self.note_misses = on;
+    }
+
+    /// Turns recording of created keys on or off.
+    pub fn note_created(&mut self, on: bool) {
+        self.note_created = on;
+        if !on {
+            self.notes.retain(|(note, _)| *note != Note::Created);
+        }
+    }
+
+    /// What happened to keys since the last call, in order.
+    pub fn take_notes(&mut self) -> Vec<(Note, Bytes)> {
+        std::mem::take(&mut self.notes)
+    }
+
+    /// Whether anything has been noted since the last [`Db::take_notes`].
+    pub fn has_notes(&self) -> bool {
+        !self.notes.is_empty()
+    }
+
+    fn note(&mut self, note: Note, key: &[u8]) {
+        self.notes.push((note, Bytes::copy_from_slice(key)));
     }
 
     fn note_written(&mut self, key: &[u8]) {
@@ -579,12 +618,20 @@ impl Db {
     /// Locates a live key, deleting it first if its TTL has passed.
     fn live(&mut self, key: &[u8], now: u64) -> Option<Pos> {
         self.dict.rehash_step(1);
-        let pos = self.dict.find(key)?;
+        let Some(pos) = self.dict.find(key) else {
+            if self.note_misses {
+                self.note(Note::Missed, key);
+            }
+            return None;
+        };
         if self.dict.at(pos).1.is_expired(now) {
             if self.track_expired {
-                self.expired.push(Bytes::copy_from_slice(key));
+                self.note(Note::Expired, key);
             }
             self.remove_entry(key);
+            if self.note_misses {
+                self.note(Note::Missed, key);
+            }
             return None;
         }
         self.mark_access(pos, now);
@@ -649,6 +696,9 @@ impl Db {
                 }
             }
             None => {
+                if self.note_created {
+                    self.note(Note::Created, key);
+                }
                 let key = Bytes::copy_from_slice(key);
                 let expire_at = match ttl {
                     SetTtl::At(at) => Some(at),
@@ -708,6 +758,9 @@ impl Db {
             None => {
                 self.touch(key);
                 self.note_written(key);
+                if self.note_created {
+                    self.note(Note::Created, key);
+                }
                 let entry = Entry::new(make(), None, self.epoch, now);
                 self.dict.insert(Bytes::copy_from_slice(key), entry);
                 self.dict
@@ -719,11 +772,14 @@ impl Db {
     }
 
     /// Deletes `key` if it holds a collection that has become empty. Every
-    /// command that removes elements calls this afterwards.
-    pub fn remove_if_empty(&mut self, key: &[u8], now: u64) {
+    /// command that removes elements calls this afterwards. Returns whether
+    /// it deleted the key.
+    pub fn remove_if_empty(&mut self, key: &[u8], now: u64) -> bool {
         if self.get(key, now).is_some_and(Value::is_empty_collection) {
             self.remove_entry(key);
+            return true;
         }
+        false
     }
 
     /// Sets (`Some`) or removes (`None`) the TTL of an existing key.
@@ -795,7 +851,7 @@ impl Db {
                 self.touch(&key);
                 self.preserve_key(&key);
                 if self.track_expired {
-                    self.expired.push(key.clone());
+                    self.notes.push((Note::Expired, key.clone()));
                 }
                 self.dict.remove(&key);
                 removed += 1;
@@ -1185,12 +1241,22 @@ mod tests {
         assert!(db.snapshot_step(1));
     }
 
+    fn expired(notes: Vec<(Note, Bytes)>) -> Vec<Bytes> {
+        notes
+            .into_iter()
+            .map(|(note, key)| {
+                assert_eq!(note, Note::Expired);
+                key
+            })
+            .collect()
+    }
+
     #[test]
     fn expired_keys_are_recorded_only_while_tracking() {
         let mut db = Db::new();
         db.set(b"a", s("1"), SetTtl::At(10), 0);
         db.get(b"a", 20);
-        assert!(db.take_expired().is_empty());
+        assert!(db.take_notes().is_empty());
 
         db.track_expired(true);
         db.set(b"lazy", s("1"), SetTtl::At(30), 20);
@@ -1201,12 +1267,82 @@ mod tests {
         db.get(b"lazy", 35);
         db.get(b"lazy", 36); // already gone: recorded once
         db.active_expire(50, 10);
-        assert_eq!(db.take_expired(), vec![&b"lazy"[..], &b"active"[..]]);
-        assert!(db.take_expired().is_empty());
+        assert_eq!(expired(db.take_notes()), vec![&b"lazy"[..], &b"active"[..]]);
+        assert!(db.take_notes().is_empty());
         db.track_expired(false);
         db.set(b"b", s("1"), SetTtl::At(60), 50);
         db.get(b"b", 70);
-        assert!(db.take_expired().is_empty());
+        assert!(db.take_notes().is_empty());
+    }
+
+    #[test]
+    fn misses_and_created_keys_are_noted_only_when_asked() {
+        let mut db = Db::new();
+        db.get(b"missing", 0);
+        db.set(b"new", s("1"), SetTtl::Clear, 0);
+        assert!(db.take_notes().is_empty());
+
+        db.track_expired(true);
+        db.note_created(true);
+        db.set(b"a", s("1"), SetTtl::At(10), 0);
+        // Overwriting is not creating.
+        db.set(b"a", s("2"), SetTtl::Keep, 0);
+        db.get_or_insert_with(b"l", 0, || Value::List(VecDeque::new()));
+        db.get_or_insert_with(b"l", 0, || Value::List(VecDeque::new()));
+        // Lookups that find nothing count only while misses are noted.
+        db.get(b"nope", 0);
+        db.note_misses(true);
+        db.get(b"nope", 0);
+        db.note_misses(false);
+        db.get(b"nope2", 0);
+        assert_eq!(
+            db.take_notes(),
+            vec![
+                (Note::Created, Bytes::from_static(b"a")),
+                (Note::Created, Bytes::from_static(b"l")),
+                (Note::Missed, Bytes::from_static(b"nope")),
+            ]
+        );
+        // Recreating an expired key: expired, then created.
+        db.set(b"a", s("3"), SetTtl::Clear, 20);
+        assert_eq!(
+            db.take_notes(),
+            vec![
+                (Note::Expired, Bytes::from_static(b"a")),
+                (Note::Created, Bytes::from_static(b"a")),
+            ]
+        );
+        db.note_created(false);
+        db.set(b"c", s("1"), SetTtl::Clear, 20);
+        assert!(db.take_notes().is_empty());
+    }
+
+    #[test]
+    fn a_read_of_an_expired_key_notes_the_expiry_then_the_miss() {
+        let mut db = Db::new();
+        db.track_expired(true);
+        db.set(b"a", s("1"), SetTtl::At(10), 0);
+        db.note_misses(true);
+        db.get(b"x", 0);
+        db.exists(b"a", 20);
+        assert_eq!(
+            db.take_notes(),
+            vec![
+                (Note::Missed, Bytes::from_static(b"x")),
+                (Note::Expired, Bytes::from_static(b"a")),
+                (Note::Missed, Bytes::from_static(b"a")),
+            ]
+        );
+    }
+
+    #[test]
+    fn remove_if_empty_says_whether_it_removed() {
+        let mut db = Db::new();
+        db.set(b"l", Value::List(VecDeque::new()), SetTtl::Clear, 0);
+        db.set(b"s", s("x"), SetTtl::Clear, 0);
+        assert!(db.remove_if_empty(b"l", 0));
+        assert!(!db.remove_if_empty(b"l", 0));
+        assert!(!db.remove_if_empty(b"s", 0));
     }
 
     #[test]

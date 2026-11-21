@@ -158,7 +158,6 @@ def test_pubsub_resubscribes_after_connection_drop(pubsub_ok, server, r, p):
         assert message["data"] == "again"
 
 
-@differs("notify-keyspace-events is not supported: CONFIG GET returns nothing and no events are published")
 def test_keyspace_notifications(pubsub_ok, r, p):
     old = r.config_get("notify-keyspace-events").get("notify-keyspace-events", "")
     assert r.config_set("notify-keyspace-events", "KEA")

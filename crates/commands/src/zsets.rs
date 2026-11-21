@@ -6,11 +6,20 @@ use bytes::Bytes;
 use rexyra_engine::{glob_match, Db, LexBound, ScoreBound, Set, SetTtl, Value, ZSet};
 use rexyra_resp::{format_double, Frame, Protocol};
 
+use crate::notify::{self, notify, GENERIC, ZSET};
 use crate::strings::parse_float;
 use crate::{
     int, is, parse_cursor, parse_scan_options, parse_timeout, reply, sample_distinct, wrong_type,
     BlockKind, Ctx, ERR_SYNTAX,
 };
+
+/// Deletes `key` if its sorted set has become empty, and says so.
+fn remove_if_empty(ctx: &mut Ctx<'_>, key: &[u8]) {
+    let (db, now) = ctx.db();
+    if db.remove_if_empty(key, now) {
+        notify(ctx, GENERIC, "del", key);
+    }
+}
 
 const ERR_NOT_FLOAT: &str = "ERR value is not a valid float";
 const ERR_NAN: &str = "ERR resulting score is not a number (NaN)";
@@ -355,17 +364,20 @@ pub(crate) fn zrevrangebylex(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
 }
 
 /// Replaces `key` with a sorted set of `items`, or deletes it if there are
-/// none. Replies with the number stored.
-fn store(ctx: &mut Ctx<'_>, key: &[u8], items: &Scored) -> Frame {
+/// none. Replies with the number stored. `event` names the change.
+fn store(ctx: &mut Ctx<'_>, key: &[u8], items: &Scored, event: &'static str) -> Frame {
     let (db, now) = ctx.db();
     if items.is_empty() {
-        db.remove(key, now);
+        if db.remove(key, now) {
+            notify(ctx, GENERIC, "del", key);
+        }
     } else {
         let mut zset = ZSet::new();
         for (member, score) in items {
             zset.insert(member, *score);
         }
         db.set(key, Value::ZSet(zset), SetTtl::Clear, now);
+        notify(ctx, ZSET, event, key);
     }
     Frame::Integer(items.len() as i64)
 }
@@ -374,8 +386,11 @@ fn store(ctx: &mut Ctx<'_>, key: &[u8], items: &Scored) -> Frame {
 pub(crate) fn zrangestore(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
     reply((|| {
         let query = parse_zrange(&args[3], &args[4], &args[5..], false)?;
-        let items = query.run(ctx, &args[2])?;
-        Ok(store(ctx, &args[1], &items))
+        // The source is read as `ZRANGE` reads it.
+        notify::reading(ctx, true);
+        let items = query.run(ctx, &args[2]);
+        notify::reading(ctx, false);
+        Ok(store(ctx, &args[1], &items?, "zrangestore"))
     })())
 }
 
@@ -557,7 +572,13 @@ fn zadd_impl(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Result<Frame, Frame> {
     if added + updated == 0 {
         db.unchanged(key);
     }
-    db.remove_if_empty(key, now);
+    let emptied = db.remove_if_empty(key, now);
+    if added + updated > 0 {
+        notify(ctx, ZSET, if incr { "zincr" } else { "zadd" }, key);
+    }
+    if emptied {
+        notify(ctx, GENERIC, "del", key);
+    }
 
     if let Some(error) = failure {
         return Err(error);
@@ -582,6 +603,8 @@ pub(crate) fn zincrby(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
         zset_or_create(db, &args[1], now)?.insert(&args[3], updated);
         if current == Some(updated) {
             db.unchanged(&args[1]);
+        } else {
+            notify(ctx, ZSET, "zincr", &args[1]);
         }
         Ok(Frame::Double(updated))
     })())
@@ -599,20 +622,23 @@ pub(crate) fn zrem(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
             .count();
         if removed == 0 {
             db.unchanged(&args[1]);
+            return Ok(Frame::Integer(0));
         }
-        db.remove_if_empty(&args[1], now);
+        notify(ctx, ZSET, "zrem", &args[1]);
+        remove_if_empty(ctx, &args[1]);
         Ok(Frame::Integer(removed as i64))
     })())
 }
 
 /// Removes the members `bounds` selects and returns them in ascending order
-/// (descending when `reverse`).
+/// (descending when `reverse`). `event` names the change, if there is one.
 fn remove_selected(
-    db: &mut Db,
+    ctx: &mut Ctx<'_>,
     key: &[u8],
-    now: u64,
+    event: &'static str,
     pick: impl FnOnce(&ZSet) -> (Range<usize>, bool),
 ) -> Result<Option<Scored>, Frame> {
+    let (db, now) = ctx.db();
     let Some(zset) = zset_mut(db, key, now)? else {
         return Ok(None);
     };
@@ -623,16 +649,22 @@ fn remove_selected(
     }
     if removed.is_empty() {
         db.unchanged(key);
+    } else {
+        notify(ctx, ZSET, event, key);
+        remove_if_empty(ctx, key);
     }
-    db.remove_if_empty(key, now);
     Ok(Some(removed))
 }
 
-fn remove_range(ctx: &mut Ctx<'_>, key: &[u8], bounds: Result<Bounds, Frame>) -> Frame {
+fn remove_range(
+    ctx: &mut Ctx<'_>,
+    key: &[u8],
+    bounds: Result<Bounds, Frame>,
+    event: &'static str,
+) -> Frame {
     reply((|| {
         let bounds = bounds?;
-        let (db, now) = ctx.db();
-        let removed = remove_selected(db, key, now, |zset| {
+        let removed = remove_selected(ctx, key, event, |zset| {
             (select(zset, &bounds, false, None), false)
         })?;
         Ok(Frame::Integer(removed.map_or(0, |r| r.len() as i64)))
@@ -641,15 +673,25 @@ fn remove_range(ctx: &mut Ctx<'_>, key: &[u8], bounds: Result<Bounds, Frame>) ->
 
 pub(crate) fn zremrangebyrank(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
     let bounds = int(&args[2]).and_then(|start| Ok(Bounds::Rank(start, int(&args[3])?)));
-    remove_range(ctx, &args[1], bounds)
+    remove_range(ctx, &args[1], bounds, "zremrangebyrank")
 }
 
 pub(crate) fn zremrangebyscore(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
-    remove_range(ctx, &args[1], score_bounds(&args[2], &args[3]))
+    remove_range(
+        ctx,
+        &args[1],
+        score_bounds(&args[2], &args[3]),
+        "zremrangebyscore",
+    )
 }
 
 pub(crate) fn zremrangebylex(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
-    remove_range(ctx, &args[1], lex_bounds(&args[2], &args[3]))
+    remove_range(
+        ctx,
+        &args[1],
+        lex_bounds(&args[2], &args[3]),
+        "zremrangebylex",
+    )
 }
 
 // --- pop --------------------------------------------------------------------
@@ -657,13 +699,13 @@ pub(crate) fn zremrangebylex(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
 /// Removes up to `count` members from the low end, or the high end when
 /// `max`. `None` if the key does not exist.
 fn pop_ends(
-    db: &mut Db,
+    ctx: &mut Ctx<'_>,
     key: &[u8],
-    now: u64,
     max: bool,
     count: usize,
 ) -> Result<Option<Scored>, Frame> {
-    remove_selected(db, key, now, |zset| {
+    let event = if max { "zpopmax" } else { "zpopmin" };
+    remove_selected(ctx, key, event, |zset| {
         let take = count.min(zset.len());
         if max {
             (zset.len() - take..zset.len(), true)
@@ -685,8 +727,7 @@ fn pop(ctx: &mut Ctx<'_>, args: &[Bytes], max: bool) -> Frame {
             _ => return Err(Frame::error(ERR_SYNTAX)),
         };
         let resp3 = is_resp3(ctx);
-        let (db, now) = ctx.db();
-        let popped = pop_ends(db, &args[1], now, max, count.unwrap_or(1))?.unwrap_or_default();
+        let popped = pop_ends(ctx, &args[1], max, count.unwrap_or(1))?.unwrap_or_default();
         // RESP3 nests the pairs only when a count was given explicitly.
         Ok(scored_reply(popped, true, resp3 && count.is_some()))
     })())
@@ -734,9 +775,8 @@ fn multi_pop(ctx: &mut Ctx<'_>, args: &[Bytes], timeout: Option<&[u8]>) -> Resul
         None => None,
     };
 
-    let (db, now) = ctx.db();
     for key in keys {
-        if let Some(popped) = pop_ends(db, key, now, max, count)? {
+        if let Some(popped) = pop_ends(ctx, key, max, count)? {
             // Pairs are nested in both protocol versions here.
             return Ok(Frame::Array(vec![
                 Frame::Bulk(key.clone()),
@@ -769,9 +809,8 @@ fn blocking_pop(ctx: &mut Ctx<'_>, args: &[Bytes], max: bool) -> Frame {
             .split_last()
             .expect("arity guarantees a key and a timeout");
         let deadline = parse_timeout(timeout, ctx.now)?;
-        let (db, now) = ctx.db();
         for key in keys {
-            if let Some(popped) = pop_ends(db, key, now, max, 1)? {
+            if let Some(popped) = pop_ends(ctx, key, max, 1)? {
                 let mut triple = vec![Frame::Bulk(key.clone())];
                 for (member, score) in popped {
                     triple.push(Frame::Bulk(member));
@@ -1021,8 +1060,16 @@ fn algebra(ctx: &mut Ctx<'_>, args: &[Bytes], command: &str, op: Algebra) -> Fra
 fn algebra_store(ctx: &mut Ctx<'_>, args: &[Bytes], command: &str, op: Algebra) -> Frame {
     reply((|| {
         let parsed = parse_algebra(&args[2..], command, op, false)?;
-        let items = combine(ctx, &parsed, op, 0)?;
-        Ok(store(ctx, &args[1], &items))
+        // The sources are read as `ZUNION` reads them.
+        notify::reading(ctx, true);
+        let items = combine(ctx, &parsed, op, 0);
+        notify::reading(ctx, false);
+        let event = match op {
+            Algebra::Union => "zunionstore",
+            Algebra::Inter => "zinterstore",
+            Algebra::Diff => "zdiffstore",
+        };
+        Ok(store(ctx, &args[1], &items?, event))
     })())
 }
 

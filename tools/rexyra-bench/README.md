@@ -91,6 +91,22 @@ Each ordinary run takes about 25 s and each slow-disk run 55–75 s (mostly
 loading and reloading); the whole set takes about 25 minutes. Run nothing else heavy at the same time,
 and one scenario at a time.
 
+## Single commands (`ops`)
+
+`rexyra-bench ops` measures the throughput of one command at a time, to see
+what a change to the command path costs. Each run starts a fresh server, then
+for `SET`, `GET` and `LPUSH` in turn has `--clients` (50) connections send
+pipelines of `--pipeline` (16) commands for `--warmup-secs` (1) plus
+`--seconds` (5); only the pipelines completed after the warm-up count. It
+prints operations per second and the 50th and 99th percentile latency of a
+whole pipeline. `--notify FLAGS` sets `notify-keyspace-events` first, which
+is how the cost of keyspace notifications was measured:
+
+```
+target\release\rexyra-bench.exe ops --runs 5 --label off
+target\release\rexyra-bench.exe ops --runs 5 --label kea --notify KEA
+```
+
 ## Limits
 
 - Closed-loop clients: each connection waits for its reply before sending

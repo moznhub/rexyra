@@ -189,6 +189,7 @@ pub(crate) fn free_memory(ctx: &mut Ctx<'_>) -> bool {
             if let Some(aof) = &mut ctx.server.aof {
                 aof.log(db, &[&b"DEL"[..], &key[..]]);
             }
+            crate::notify::notify_in(ctx, db, crate::notify::EVICTED, "evicted", &key);
         }
     }
     // Still over, but making progress: the next command continues.

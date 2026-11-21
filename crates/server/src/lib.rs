@@ -93,6 +93,7 @@ pub async fn serve_with(
     server.meter = MemoryMeter::Allocator(allocated_bytes);
     server.protected_mode = config.protected_mode;
     server.enable_debug_command = config.enable_debug_command;
+    server.notify_flags = config.notify_keyspace_events;
     for user in &config.users {
         server
             .acl
@@ -151,6 +152,7 @@ pub async fn serve_with(
         }
     };
     keyspace.set_lfu(server.lfu_log_factor, server.lfu_decay_time);
+    rexyra_commands::notify::sync(&server, &mut keyspace);
     // Automatic saves count their interval from start-up.
     server.last_save = now / 1000;
     let (executor, stopped) = Executor::spawn(server, keyspace)?;

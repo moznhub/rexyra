@@ -18,6 +18,7 @@ mod lcs;
 mod lists;
 mod lualibs;
 pub mod memory;
+pub mod notify;
 mod object;
 pub mod persistence;
 pub mod pubsub;
@@ -325,9 +326,26 @@ pub fn dispatch(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
 
 /// Runs a validated command and accounts for it.
 pub(crate) fn run(ctx: &mut Ctx<'_>, spec: &CommandSpec, args: &[Bytes]) -> Frame {
+    // A command that only reads reports the keys it finds missing
+    // (`keymiss`); the commands that only look at the keyspace as a whole
+    // (`SCAN`, `KEYS`, ...) do not, nor does `MEMORY USAGE`, which Redis
+    // looks up without notifying, as `OBJECT`.
+    let reads = ctx.server.notify_flags & notify::KEY_MISS != 0
+        && spec.flags.contains(&"readonly")
+        && (spec.first_key != 0 || acl::has_movable_keys(spec))
+        && spec.name != "memory";
+    if reads {
+        notify::reading(ctx, true);
+    }
     let started = Instant::now();
     let frame = (spec.handler)(ctx, args);
     let micros = started.elapsed().as_micros() as u64;
+    // Off again, also after a write that counted some of its lookups as
+    // reads and stopped early.
+    notify::reading(ctx, false);
+    // Publish what the keyspace noted during the command (and log the
+    // keys that expired) before the command itself is logged.
+    notify::settle(ctx);
     ctx.keyspace.settle_watches();
     // A blocking command that is about to wait has not happened yet: it is
     // counted when it runs again and completes.

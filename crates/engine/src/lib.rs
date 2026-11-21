@@ -14,7 +14,7 @@ mod hash;
 mod set;
 mod zset;
 
-pub use db::{Candidate, Db, Entry, SetTtl, SnapshotSink, Value};
+pub use db::{Candidate, Db, Entry, Note, SetTtl, SnapshotSink, Value};
 pub use dict::Dict;
 pub use glob::glob_match;
 pub use hash::Hash;
@@ -132,13 +132,29 @@ impl Keyspace {
         }
     }
 
-    /// See [`Db::take_expired`]: `(database index, key)` pairs.
-    pub fn take_expired(&mut self) -> Vec<(usize, Bytes)> {
-        let mut expired = Vec::new();
-        for (index, db) in self.dbs.iter_mut().enumerate() {
-            expired.extend(db.take_expired().into_iter().map(|key| (index, key)));
+    /// See [`Db::note_created`]; applies to every database.
+    pub fn note_created(&mut self, on: bool) {
+        for db in &mut self.dbs {
+            db.note_created(on);
         }
-        expired
+    }
+
+    /// See [`Db::take_notes`]: `(database index, note, key)`, database by
+    /// database.
+    pub fn take_notes(&mut self) -> Vec<(usize, Note, Bytes)> {
+        // The usual case, after every command while notes are kept: cheap.
+        if !self.dbs.iter().any(Db::has_notes) {
+            return Vec::new();
+        }
+        let mut notes = Vec::new();
+        for (index, db) in self.dbs.iter_mut().enumerate() {
+            notes.extend(
+                db.take_notes()
+                    .into_iter()
+                    .map(|(note, key)| (index, note, key)),
+            );
+        }
+        notes
     }
 
     /// See [`Db::settle_watches`]; applies to every database.

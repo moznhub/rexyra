@@ -505,6 +505,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rexyra-keyevents"
+version = "0.3.0"
+
+[[package]]
 name = "rexyra-persist"
 version = "0.3.0"
 dependencies = [

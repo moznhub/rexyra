@@ -5,7 +5,8 @@ use bytes::{Bytes, BytesMut};
 use rexyra_engine::{Db, SetTtl, Value};
 use rexyra_resp::{parse_i64, Frame, MAX_BULK_LEN};
 
-use crate::strings::{editable, read, string_mut};
+use crate::notify::{notify, GENERIC, STRING};
+use crate::strings::{editable, read, read_counted, string_mut};
 use crate::{int, is, reply, Ctx, ERR_SYNTAX};
 
 /// One past the highest addressable bit (strings are capped at 512 MB).
@@ -123,7 +124,11 @@ pub(crate) fn setbit(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
         } else {
             buf[byte] &= !mask;
         }
-        store_buffer(db, &args[1], now, buf, grew || was_on != on);
+        let changed = grew || was_on != on;
+        store_buffer(db, &args[1], now, buf, changed);
+        if changed {
+            notify(ctx, STRING, "setbit", &args[1]);
+        }
         Ok(Frame::Integer(i64::from(was_on)))
     })())
 }
@@ -250,7 +255,7 @@ pub(crate) fn bitop(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
     // Missing keys count as empty strings; shorter inputs are zero-padded.
     let inputs: Vec<Bytes> = match sources
         .iter()
-        .map(|key| read(ctx, key).map(Option::unwrap_or_default))
+        .map(|key| read_counted(ctx, key).map(Option::unwrap_or_default))
         .collect::<Result<_, _>>()
     {
         Ok(inputs) => inputs,
@@ -260,7 +265,9 @@ pub(crate) fn bitop(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
 
     let (db, now) = ctx.db();
     if len == 0 {
-        db.remove(dest, now);
+        if db.remove(dest, now) {
+            notify(ctx, GENERIC, "del", dest);
+        }
         return Frame::Integer(0);
     }
     let mut result = BytesMut::zeroed(len);
@@ -277,6 +284,7 @@ pub(crate) fn bitop(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
         }
     }
     db.set(dest, Value::String(result.freeze()), SetTtl::Clear, now);
+    notify(ctx, STRING, "set", dest);
     Frame::Integer(len as i64)
 }
 
@@ -438,7 +446,7 @@ pub(crate) fn bitfield(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
 
         let Some(needed) = needed else {
             // Read-only: never creates or touches the key.
-            let data = read(ctx, key)?.unwrap_or_default();
+            let data = read_counted(ctx, key)?.unwrap_or_default();
             return Ok(Frame::Array(
                 ops.iter()
                     .map(|op| match op {
@@ -457,6 +465,9 @@ pub(crate) fn bitfield(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
         if changed {
             buf.resize(needed, 0);
         }
+        // Writes that were carried out, whether or not they changed a bit:
+        // Redis reports the command as a change if there was any.
+        let mut writes = 0;
         let replies = ops
             .iter()
             .map(|op| match *op {
@@ -467,6 +478,7 @@ pub(crate) fn bitfield(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
                         Some(value) => {
                             write_field(&mut buf, field, offset, value);
                             changed |= value != old;
+                            writes += 1;
                             Frame::Integer(old)
                         }
                         None => Frame::Null,
@@ -478,6 +490,7 @@ pub(crate) fn bitfield(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
                         Some(value) => {
                             write_field(&mut buf, field, offset, value);
                             changed |= value != old;
+                            writes += 1;
                             Frame::Integer(value)
                         }
                         None => Frame::Null,
@@ -486,6 +499,9 @@ pub(crate) fn bitfield(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
             })
             .collect();
         store_buffer(db, key, now, buf, changed);
+        if writes > 0 {
+            notify(ctx, STRING, "setbit", key);
+        }
         Ok(Frame::Array(replies))
     })())
 }

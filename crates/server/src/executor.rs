@@ -51,7 +51,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::{Bytes, BytesMut};
 use rexyra_commands::{
-    aof, dispatch, persistence, pubsub, unwatch_all, BlockKind, BlockRequest, BusyPoll,
+    aof, dispatch, notify, persistence, pubsub, unwatch_all, BlockKind, BlockRequest, BusyPoll,
     ClientState, Ctx, Effect, Server,
 };
 use rexyra_engine::{Keyspace, Value};
@@ -497,8 +497,21 @@ impl State {
                     let now = now_ms();
                     persistence::autosave(&mut self.server, &mut self.keyspace, now);
                     aof::tick(&mut self.server, &mut self.keyspace, now);
-                    let expired = self.keyspace.cron(now, MAX_EXPIRED_PER_TICK);
+                    // `DEBUG SET-ACTIVE-EXPIRE 0` leaves expired keys to
+                    // be deleted when they are next looked up.
+                    let max_expired = if self.server.active_expire {
+                        MAX_EXPIRED_PER_TICK
+                    } else {
+                        0
+                    };
+                    let expired = self.keyspace.cron(now, max_expired);
                     self.server.stats.expired_keys += expired as u64;
+                    // The keys just deleted are logged and, when asked
+                    // for, announced (`expired`).
+                    notify::flush(&mut self.server, &mut self.keyspace);
+                    if !self.server.pushes.is_empty() {
+                        self.deliver_detached_pushes();
+                    }
                     self.server.stats.sample_rate(now);
                     self.expire_waits();
                 }
@@ -661,6 +674,21 @@ impl State {
                 continue;
             }
             // A receiver that has gone is simply skipped.
+            let Some(proto) = self.clients.get(&id).map(|target| target.proto) else {
+                continue;
+            };
+            if let Some(io) = self.io.get_mut(&id) {
+                encode(&frame, proto, &mut io.buf);
+                self.mark_dirty(id);
+            }
+        }
+    }
+
+    /// Appends messages published while no command was running (keyspace
+    /// notifications of the periodic expiry cycle) to their receivers'
+    /// output.
+    fn deliver_detached_pushes(&mut self) {
+        for (id, frame) in std::mem::take(&mut self.server.pushes) {
             let Some(proto) = self.clients.get(&id).map(|target| target.proto) else {
                 continue;
             };

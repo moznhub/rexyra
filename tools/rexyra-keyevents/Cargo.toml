@@ -1,0 +1,13 @@
+[package]
+name = "rexyra-keyevents"
+description = "Records the keyspace notifications a script of commands produces, to compare rexyra-server with Redis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

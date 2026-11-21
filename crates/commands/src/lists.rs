@@ -11,6 +11,7 @@ use bytes::Bytes;
 use rexyra_engine::{Db, Value};
 use rexyra_resp::Frame;
 
+use crate::notify::{notify, GENERIC, LIST};
 use crate::{copied, int, is, parse_timeout, reply, wrong_type, BlockKind, Ctx, ERR_SYNTAX};
 
 type List = VecDeque<Bytes>;
@@ -72,6 +73,30 @@ impl End {
             End::Right => list.pop_back(),
         }
     }
+
+    /// The keyspace event for pushing at this end.
+    fn push_event(self) -> &'static str {
+        match self {
+            End::Left => "lpush",
+            End::Right => "rpush",
+        }
+    }
+
+    /// The keyspace event for popping from this end.
+    fn pop_event(self) -> &'static str {
+        match self {
+            End::Left => "lpop",
+            End::Right => "rpop",
+        }
+    }
+}
+
+/// Deletes `key` if its list has become empty, and says so.
+fn remove_if_empty(ctx: &mut Ctx<'_>, key: &[u8]) {
+    let (db, now) = ctx.db();
+    if db.remove_if_empty(key, now) {
+        notify(ctx, GENERIC, "del", key);
+    }
 }
 
 /// Resolves an inclusive `start..=stop` range where negative indexes count
@@ -119,7 +144,9 @@ fn push(ctx: &mut Ctx<'_>, args: &[Bytes], end: End, only_if_exists: bool) -> Fr
         for element in &args[2..] {
             end.push(list, copied(element));
         }
-        Ok(Frame::Integer(list.len() as i64))
+        let length = list.len() as i64;
+        notify(ctx, LIST, end.push_event(), &args[1]);
+        Ok(Frame::Integer(length))
     })())
 }
 
@@ -144,12 +171,12 @@ pub(crate) fn rpushx(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
 /// Pops up to `count` elements, deleting the key if the list empties.
 /// `None` if the key does not exist.
 fn pop_many(
-    db: &mut Db,
+    ctx: &mut Ctx<'_>,
     key: &[u8],
-    now: u64,
     end: End,
     count: usize,
 ) -> Result<Option<Vec<Bytes>>, Frame> {
+    let (db, now) = ctx.db();
     let Some(list) = list_mut(db, key, now)? else {
         return Ok(None);
     };
@@ -158,8 +185,10 @@ fn pop_many(
         .collect();
     if popped.is_empty() {
         db.unchanged(key);
+    } else {
+        notify(ctx, LIST, end.pop_event(), key);
     }
-    db.remove_if_empty(key, now);
+    remove_if_empty(ctx, key);
     Ok(Some(popped))
 }
 
@@ -174,8 +203,7 @@ fn pop(ctx: &mut Ctx<'_>, args: &[Bytes], end: End) -> Frame {
             },
             _ => return Err(Frame::error(ERR_SYNTAX)),
         };
-        let (db, now) = ctx.db();
-        let popped = pop_many(db, &args[1], now, end, count.unwrap_or(1))?;
+        let popped = pop_many(ctx, &args[1], end, count.unwrap_or(1))?;
         Ok(match (popped, count) {
             (None, None) => Frame::Null,
             (None, Some(_)) => Frame::NullArray,
@@ -201,9 +229,8 @@ fn blocking_pop(ctx: &mut Ctx<'_>, args: &[Bytes], end: End) -> Frame {
             .split_last()
             .expect("arity guarantees a key and a timeout");
         let deadline = parse_timeout(timeout, ctx.now)?;
-        let (db, now) = ctx.db();
         for key in keys {
-            if let Some(popped) = pop_many(db, key, now, end, 1)? {
+            if let Some(popped) = pop_many(ctx, key, end, 1)? {
                 let mut pair = vec![Frame::Bulk(key.clone())];
                 pair.extend(popped.into_iter().map(Frame::Bulk));
                 return Ok(Frame::Array(pair));
@@ -249,9 +276,8 @@ fn multi_pop(ctx: &mut Ctx<'_>, args: &[Bytes], timeout: Option<&[u8]>) -> Resul
         None => None,
     };
 
-    let (db, now) = ctx.db();
     for key in keys {
-        if let Some(popped) = pop_many(db, key, now, end, count)? {
+        if let Some(popped) = pop_many(ctx, key, end, count)? {
             return Ok(Frame::Array(vec![
                 Frame::Bulk(key.clone()),
                 Frame::Array(popped.into_iter().map(Frame::Bulk).collect()),
@@ -294,8 +320,11 @@ fn move_element(
         return Ok(None);
     };
     to.push(list_or_create(db, destination, now)?, element.clone());
+    // As in Redis: the push is reported first.
+    notify(ctx, LIST, to.push_event(), destination);
+    notify(ctx, LIST, from.pop_event(), source);
     // Only now: when both keys are the same list, it is momentarily empty.
-    db.remove_if_empty(source, now);
+    remove_if_empty(ctx, source);
     Ok(Some(element))
 }
 
@@ -470,6 +499,7 @@ pub(crate) fn lset(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
         let list = list_mut(db, &args[1], now)?.ok_or_else(|| Frame::error(ERR_NO_SUCH_KEY))?;
         let index = resolve_index(index, list.len()).ok_or_else(|| Frame::error(ERR_INDEX))?;
         list[index] = copied(&args[3]);
+        notify(ctx, LIST, "lset", &args[1]);
         Ok(Frame::ok())
     })())
 }
@@ -493,7 +523,9 @@ pub(crate) fn linsert(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
             return Ok(Frame::Integer(-1));
         };
         list.insert(pivot + usize::from(after), copied(&args[4]));
-        Ok(Frame::Integer(list.len() as i64))
+        let length = list.len() as i64;
+        notify(ctx, LIST, "linsert", &args[1]);
+        Ok(Frame::Integer(length))
     })())
 }
 
@@ -537,7 +569,8 @@ pub(crate) fn lrem(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
                 index += 1;
                 !doomed[index - 1]
             });
-            db.remove_if_empty(&args[1], now);
+            notify(ctx, LIST, "lrem", &args[1]);
+            remove_if_empty(ctx, &args[1]);
         } else {
             db.unchanged(&args[1]);
         }
@@ -560,7 +593,8 @@ pub(crate) fn ltrim(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
             }
             None => list.clear(),
         }
-        db.remove_if_empty(&args[1], now);
+        notify(ctx, LIST, "ltrim", &args[1]);
+        remove_if_empty(ctx, &args[1]);
         Ok(Frame::ok())
     })())
 }

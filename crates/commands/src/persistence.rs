@@ -1331,12 +1331,17 @@ pub(crate) fn restore(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
             (ttl, false) => Some(now.saturating_add(ttl)),
         };
         let already_expired = expire_at.is_some_and(|at| at <= now);
+        // A key replaced is deleted first; the restored one is new.
+        let deleted = db.remove(key, now);
         if already_expired {
             // The key ends up not existing.
-            db.remove(key, now);
+            if deleted {
+                crate::notify::notify(ctx, crate::notify::GENERIC, "del", key);
+            }
         } else {
             let ttl = expire_at.map_or(SetTtl::Clear, SetTtl::At);
             db.set(key, value, ttl, now);
+            crate::notify::notify(ctx, crate::notify::GENERIC, "restore", key);
         }
         // Logged with an absolute expiry, whichever way it was given.
         ctx.log_instead(|| {
