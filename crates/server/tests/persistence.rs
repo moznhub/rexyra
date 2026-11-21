@@ -111,6 +111,9 @@ async fn data_survives_save_and_restart() {
     c.check("RPUSH queue a b c", ":3\r\n").await;
     c.check("ZADD board 10 alice 20 bob", ":2\r\n").await;
     c.check("SET session token EX 1000", "+OK\r\n").await;
+    c.check("HSET user name ann token t", ":2\r\n").await;
+    c.check("HEXPIRE user 1000 FIELDS 1 token", "*1\r\n:1\r\n")
+        .await;
     c.check("SAVE", "+OK\r\n").await;
     // Written after the save: not in the snapshot.
     c.check("SET unsaved lost", "+OK\r\n").await;
@@ -127,8 +130,10 @@ async fn data_survives_save_and_restart() {
     .await;
     c.check("ZSCORE board bob", "$2\r\n20\r\n").await;
     c.check("TTL session", ":1000\r\n").await;
+    c.check("HTTL user FIELDS 2 token name", "*2\r\n:1000\r\n:-1\r\n")
+        .await;
     c.check("EXISTS unsaved", ":0\r\n").await;
-    c.check("DBSIZE", ":4\r\n").await;
+    c.check("DBSIZE", ":5\r\n").await;
 }
 
 #[tokio::test]
@@ -419,6 +424,8 @@ async fn acknowledged_writes_survive_without_a_shutdown() {
     c.check("SET k v", "+OK\r\n").await;
     c.check("RPUSH l a b", ":2\r\n").await;
     c.check("SET temp v EX 1000", "+OK\r\n").await;
+    c.check("HSET h a 1 b 2", ":2\r\n").await;
+    c.check("HEXPIRE h 1000 FIELDS 1 a", "*1\r\n:1\r\n").await;
     c.check("MULTI", "+OK\r\n").await;
     c.check("INCR n", "+QUEUED\r\n").await;
     c.check("INCR n", "+QUEUED\r\n").await;
@@ -433,6 +440,8 @@ async fn acknowledged_writes_survive_without_a_shutdown() {
     c.check("LRANGE l 0 -1", "*2\r\n$1\r\na\r\n$1\r\nb\r\n")
         .await;
     c.check("TTL temp", ":1000\r\n").await;
+    c.check("HTTL h FIELDS 2 a b", "*2\r\n:1000\r\n:-1\r\n")
+        .await;
     c.check("GET n", "$1\r\n2\r\n").await;
     drop(first);
 }

@@ -199,7 +199,6 @@ class JedisDataTypeTest {
     }
 
     /** Field expiry, new in Redis 7.4. */
-    @Disabled("Rexyra: hash field expiry is not implemented (HEXPIRE: unknown command)")
     @ParameterizedTest
     @MethodSource("io.rexyra.clienttests.jedis.JedisSupport#protocols")
     void hashFieldExpiry(RedisProtocol protocol) {

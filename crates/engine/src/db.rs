@@ -11,7 +11,7 @@ use crate::zset::ZSet;
 /// Something that happened to a key as a side effect of looking it up or
 /// writing it, recorded (when asked for) for keyspace notifications and the
 /// append-only file; see [`Db::take_notes`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Note {
     /// The key was deleted because its TTL had passed.
     Expired,
@@ -19,6 +19,9 @@ pub enum Note {
     Missed,
     /// The key was created (Redis's `new`).
     Created,
+    /// These fields of the hash at the key were deleted because their TTL
+    /// had passed; `emptied`: they were its last, and the hash went too.
+    FieldsExpired { fields: Vec<Bytes>, emptied: bool },
 }
 
 /// A stored value.
@@ -181,12 +184,25 @@ pub enum SetTtl {
 /// Unlike Redis, which samples random keys and may leave expired ones around
 /// for a while, active expiry here is exact: an index ordered by expiry time
 /// always knows which key is due next.
+///
+/// Hash fields with a TTL of their own are reclaimed the same way, through
+/// a second index: of the hashes that have field TTLs, each under a time no
+/// later than its earliest one. A TTL that goes away (`HPERSIST`, `HSET`)
+/// leaves the hash where it is; the reclaimer finds out when it gets there
+/// and moves the hash to its next field TTL, or out of the index (Redis's
+/// `subexpiry` count in `INFO keyspace` behaves the same).
 #[derive(Default)]
 pub struct Db {
     dict: Dict<Entry>,
     /// Every key with a TTL, ordered by expiry time. Kept in step with the
     /// `expire_at` field of the corresponding entry.
     expires: BTreeSet<(u64, Bytes)>,
+    /// Hashes with field TTLs, each under the time its
+    /// [`Hash::indexed_at`] says, which is never later than its earliest
+    /// field TTL.
+    field_index: BTreeSet<(u64, Bytes)>,
+    /// Fields deleted because their TTL passed, ever.
+    expired_fields: u64,
     /// Whether to record written keys in `written`.
     track_writes: bool,
     /// Keys created or overwritten since the last [`Db::take_written`].
@@ -318,7 +334,8 @@ impl Db {
         self.before_clear();
         let dict = std::mem::take(&mut self.dict);
         let expires = std::mem::take(&mut self.expires);
-        Box::new((dict, expires))
+        let field_index = std::mem::take(&mut self.field_index);
+        Box::new((dict, expires, field_index))
     }
 
     /// Turns recording of created and overwritten keys on or off. The server
@@ -471,6 +488,7 @@ impl Db {
     pub(crate) fn swap_contents(a: &mut Db, b: &mut Db) {
         std::mem::swap(&mut a.dict, &mut b.dict);
         std::mem::swap(&mut a.expires, &mut b.expires);
+        std::mem::swap(&mut a.field_index, &mut b.field_index);
         std::mem::swap(&mut a.epoch, &mut b.epoch);
         std::mem::swap(&mut a.snapshot, &mut b.snapshot);
         Db::touch_swapped(a, b);
@@ -594,6 +612,23 @@ impl Db {
         self.expires.len()
     }
 
+    /// Number of hashes with field TTLs (`subexpiry` in `INFO keyspace`).
+    /// As in Redis, a hash whose field TTLs have all been removed is
+    /// counted until the reclaimer gets to it.
+    pub fn volatile_hashes(&self) -> usize {
+        self.field_index.len()
+    }
+
+    /// Number of hash fields deleted because their TTL passed, since the
+    /// database was created or [`Db::reset_expired_fields`].
+    pub fn expired_fields(&self) -> u64 {
+        self.expired_fields
+    }
+
+    pub fn reset_expired_fields(&mut self) {
+        self.expired_fields = 0;
+    }
+
     /// What has to happen before every key goes at once: a running snapshot
     /// saves them, and watchers of keys that exist are told.
     fn before_clear(&mut self) {
@@ -613,6 +648,7 @@ impl Db {
         self.before_clear();
         self.dict.clear();
         self.expires.clear();
+        self.field_index.clear();
     }
 
     /// Locates a live key, deleting it first if its TTL has passed.
@@ -642,6 +678,7 @@ impl Db {
         self.preserve_key(key);
         let (key, entry) = self.dict.remove(key)?;
         self.touch(&key);
+        unindex_fields(&mut self.field_index, &key, &entry.value);
         if let Some(at) = entry.expire_at {
             self.expires.remove(&(at, key));
         }
@@ -676,13 +713,15 @@ impl Db {
     /// The key is copied into its own allocation: callers usually hold a
     /// slice of a network buffer, and storing that slice would keep the whole
     /// buffer alive for as long as the key exists.
-    pub fn set(&mut self, key: &[u8], value: Value, ttl: SetTtl, now: u64) {
+    pub fn set(&mut self, key: &[u8], mut value: Value, ttl: SetTtl, now: u64) {
         self.note_written(key);
         self.touch(key);
         match self.live(key, now) {
             Some(pos) => {
                 self.preserve(pos);
                 let (stored_key, entry) = self.dict.at_mut(pos);
+                unindex_fields(&mut self.field_index, stored_key, &entry.value);
+                index_fields(&mut self.field_index, stored_key, &mut value);
                 entry.value = value;
                 let new_expiry = match ttl {
                     SetTtl::Keep => return,
@@ -707,6 +746,7 @@ impl Db {
                 if let Some(at) = expire_at {
                     self.expires.insert((at, key.clone()));
                 }
+                index_fields(&mut self.field_index, &key, &mut value);
                 let entry = Entry::new(value, expire_at, self.epoch, now);
                 self.dict.insert(key, entry);
             }
@@ -758,13 +798,16 @@ impl Db {
             None => {
                 self.touch(key);
                 self.note_written(key);
+                let key = Bytes::copy_from_slice(key);
                 if self.note_created {
-                    self.note(Note::Created, key);
+                    self.notes.push((Note::Created, key.clone()));
                 }
-                let entry = Entry::new(make(), None, self.epoch, now);
-                self.dict.insert(Bytes::copy_from_slice(key), entry);
+                let mut value = make();
+                index_fields(&mut self.field_index, &key, &mut value);
+                let entry = Entry::new(value, None, self.epoch, now);
+                self.dict.insert(key.clone(), entry);
                 self.dict
-                    .find(key)
+                    .find(&key)
                     .expect("the key was inserted on the line above")
             }
         };
@@ -853,11 +896,164 @@ impl Db {
                 if self.track_expired {
                     self.notes.push((Note::Expired, key.clone()));
                 }
-                self.dict.remove(&key);
+                if let Some((_, entry)) = self.dict.remove(&key) {
+                    unindex_fields(&mut self.field_index, &key, &entry.value);
+                }
                 removed += 1;
             }
         }
         removed
+    }
+
+    /// Records that field TTLs of the hash at `key` were set, so that the
+    /// reclaimer knows when to come for them. Call after setting any.
+    pub fn index_field_ttls(&mut self, key: &[u8]) {
+        let Some(pos) = self.dict.find(key) else {
+            return;
+        };
+        let (stored_key, entry) = self.dict.at_mut(pos);
+        let Value::Hash(hash) = &mut entry.value else {
+            return;
+        };
+        let Some(next) = hash.next_field_expiry() else {
+            return;
+        };
+        let Some(ttls) = hash.ttls_mut() else {
+            return;
+        };
+        match ttls.indexed_at {
+            Some(at) if at <= next => {}
+            old => {
+                if let Some(old) = old {
+                    self.field_index.remove(&(old, stored_key.clone()));
+                }
+                self.field_index.insert((next, stored_key.clone()));
+                ttls.indexed_at = Some(next);
+            }
+        }
+    }
+
+    /// Deletes fields of the hash at `key` whose TTL has passed: those
+    /// among `fields`, or every one if `None`. A command does this before
+    /// it looks such a field up, as Redis does, and it counts as a change
+    /// of the key. The key goes too if they were its last fields. Returns
+    /// how many fields were deleted.
+    pub fn expire_fields(&mut self, key: &[u8], fields: Option<&[Bytes]>, now: u64) -> usize {
+        let Some(pos) = self.live(key, now) else {
+            return 0;
+        };
+        let Value::Hash(hash) = &self.dict.at(pos).1.value else {
+            return 0;
+        };
+        if !hash.has_expired_fields(now) {
+            return 0;
+        }
+        let due: Option<Vec<Bytes>> = fields.map(|fields| {
+            let mut due: Vec<Bytes> = Vec::new();
+            for field in fields {
+                if hash.is_field_expired(field, now) && !due.contains(field) {
+                    due.push(field.clone());
+                }
+            }
+            due
+        });
+        if due.as_ref().is_some_and(Vec::is_empty) {
+            return 0;
+        }
+        self.preserve(pos);
+        let Value::Hash(hash) = &mut self.dict.at_mut(pos).1.value else {
+            return 0;
+        };
+        let removed = match due {
+            Some(due) => {
+                for field in &due {
+                    hash.remove(field);
+                }
+                due
+            }
+            None => hash.remove_expired(now, usize::MAX),
+        };
+        let emptied = hash.is_empty();
+        let count = removed.len();
+        self.after_fields_expired(key, count, emptied, removed);
+        self.touch(key);
+        count
+    }
+
+    /// Deletes up to `max` hash fields whose TTL has passed, earliest
+    /// first, and hashes left empty by that. Returns how many fields.
+    pub fn active_expire_fields(&mut self, now: u64, max: usize) -> usize {
+        let mut removed = 0;
+        while removed < max {
+            match self.field_index.first() {
+                Some((at, _)) if *at <= now => {}
+                _ => break,
+            }
+            let Some((at, key)) = self.field_index.pop_first() else {
+                break;
+            };
+            let Some(pos) = self.dict.find(&key) else {
+                continue;
+            };
+            let entry = self.dict.at(pos).1;
+            match &entry.value {
+                // An entry left behind by a value that has since been
+                // replaced or moved under another time.
+                Value::Hash(hash) if hash.indexed_at() == Some(at) => {}
+                _ => continue,
+            }
+            if entry.is_expired(now) {
+                // The whole key is going; key expiry sees to it.
+                if let Value::Hash(hash) = &mut self.dict.at_mut(pos).1.value {
+                    if let Some(ttls) = hash.ttls_mut() {
+                        ttls.indexed_at = None;
+                    }
+                }
+                continue;
+            }
+            self.preserve(pos);
+            let (stored_key, entry) = self.dict.at_mut(pos);
+            let Value::Hash(hash) = &mut entry.value else {
+                continue;
+            };
+            let fields = hash.remove_expired(now, max - removed);
+            removed += fields.len();
+            let next = hash.next_field_expiry();
+            let emptied = hash.is_empty();
+            if let Some(ttls) = hash.ttls_mut() {
+                ttls.indexed_at = next;
+            }
+            if let Some(next) = next {
+                self.field_index.insert((next, stored_key.clone()));
+            }
+            if !fields.is_empty() {
+                // A change of the key, for watchers, as in Redis.
+                self.touch(&key);
+                self.after_fields_expired(&key, fields.len(), emptied, fields);
+            }
+        }
+        removed
+    }
+
+    /// Bookkeeping after fields of the hash at `key` were deleted by
+    /// expiry: counted, recorded, and the key deleted if it was left empty.
+    fn after_fields_expired(
+        &mut self,
+        key: &[u8],
+        count: usize,
+        emptied: bool,
+        fields: Vec<Bytes>,
+    ) {
+        self.expired_fields += count as u64;
+        if self.track_expired && count > 0 {
+            self.notes.push((
+                Note::FieldsExpired { fields, emptied },
+                Bytes::copy_from_slice(key),
+            ));
+        }
+        if emptied {
+            self.remove_entry(key);
+        }
     }
 
     /// Advances an in-progress incremental rehash; see [`Dict::rehash_step`].
@@ -866,9 +1062,37 @@ impl Db {
     }
 }
 
+/// Puts a value about to be stored at `key` into the index of hashes with
+/// field TTLs, if it is one. A value may be a copy of another key's, so
+/// whatever it says about the index is reset first.
+fn index_fields(index: &mut BTreeSet<(u64, Bytes)>, key: &Bytes, value: &mut Value) {
+    let Value::Hash(hash) = value else {
+        return;
+    };
+    let next = hash.next_field_expiry();
+    let Some(ttls) = hash.ttls_mut() else {
+        return;
+    };
+    ttls.indexed_at = next;
+    if let Some(next) = next {
+        index.insert((next, key.clone()));
+    }
+}
+
+/// Takes a value stored at `key`, which is about to go, out of the index of
+/// hashes with field TTLs.
+fn unindex_fields(index: &mut BTreeSet<(u64, Bytes)>, key: &Bytes, value: &Value) {
+    if let Value::Hash(hash) = value {
+        if let Some(at) = hash.indexed_at() {
+            index.remove(&(at, key.clone()));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Hash;
     use proptest::prelude::*;
     use std::collections::HashMap;
 
@@ -1251,6 +1475,188 @@ mod tests {
             .collect()
     }
 
+    fn hash(fields: &[(&str, Option<u64>)]) -> Value {
+        let mut hash = Hash::new();
+        for (field, at) in fields {
+            hash.insert(field.as_bytes(), Bytes::from_static(b"v"));
+            if let Some(at) = at {
+                hash.set_field_expire(field.as_bytes(), *at);
+            }
+        }
+        Value::Hash(hash)
+    }
+
+    fn fields_of(db: &mut Db, key: &str, now: u64) -> Vec<String> {
+        match db.get(key.as_bytes(), now) {
+            Some(Value::Hash(hash)) => hash
+                .iter(now)
+                .map(|(field, _)| String::from_utf8(field.to_vec()).unwrap())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Every hash with a field TTL is in the field index, under a time no
+    /// later than its earliest one; nothing else is, but for entries the
+    /// reclaimer will find stale.
+    fn assert_fields_indexed(db: &Db) {
+        for (key, entry) in db.iter() {
+            if let Value::Hash(hash) = &entry.value {
+                match (hash.next_field_expiry(), hash.indexed_at()) {
+                    (Some(next), Some(at)) => {
+                        assert!(at <= next, "{key:?} indexed late");
+                        assert!(db.field_index.contains(&(at, key.clone())), "{key:?}");
+                    }
+                    (Some(_), None) => panic!("{key:?} has field TTLs but is not indexed"),
+                    (None, Some(at)) => {
+                        assert!(db.field_index.contains(&(at, key.clone())), "{key:?}");
+                    }
+                    (None, None) => {}
+                }
+            }
+        }
+        for (at, key) in &db.field_index {
+            let indexed = matches!(
+                db.dict.get(key),
+                Some(Entry { value: Value::Hash(hash), .. }) if hash.indexed_at() == Some(*at)
+            );
+            assert!(indexed, "stray entry for {key:?}");
+        }
+    }
+
+    #[test]
+    fn hash_fields_are_reclaimed_in_time_order_a_bounded_number_at_a_time() {
+        let mut db = Db::new();
+        db.track_expired(true);
+        db.set(
+            b"h",
+            hash(&[
+                ("a", Some(30)),
+                ("b", Some(10)),
+                ("c", None),
+                ("d", Some(20)),
+            ]),
+            SetTtl::Clear,
+            0,
+        );
+        db.set(b"whole", hash(&[("x", Some(15))]), SetTtl::Clear, 0);
+        db.set(b"plain", hash(&[("x", None)]), SetTtl::Clear, 0);
+        assert_eq!(db.volatile_hashes(), 2);
+        assert_fields_indexed(&db);
+
+        assert_eq!(db.active_expire_fields(9, 100), 0);
+        // Two at most: the hash due first gives up both of its fields due
+        // (b, then d), and `whole` waits for the next call.
+        assert_eq!(db.active_expire_fields(25, 2), 2);
+        assert_eq!(fields_of(&mut db, "h", 0), ["a", "c"]);
+        assert!(db.exists(b"whole", 0));
+        assert_eq!(db.active_expire_fields(25, 2), 1);
+        assert!(!db.exists(b"whole", 25), "its last field went");
+        assert_eq!(db.active_expire_fields(100, 100), 1);
+        assert_eq!(fields_of(&mut db, "h", 0), ["c"]);
+        assert_eq!(db.volatile_hashes(), 0);
+        assert_eq!(db.expired_fields(), 4);
+        assert_fields_indexed(&db);
+        let field = |name: &'static str| Bytes::from_static(name.as_bytes());
+        let expired = |fields: Vec<Bytes>, emptied: bool| Note::FieldsExpired { fields, emptied };
+        assert_eq!(
+            db.take_notes(),
+            vec![
+                (expired(vec![field("b"), field("d")], false), field("h")),
+                (expired(vec![field("x")], true), field("whole")),
+                (expired(vec![field("a")], false), field("h")),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_lookup_deletes_the_expired_fields_it_names() {
+        let mut db = Db::new();
+        db.track_expired(true);
+        db.set(
+            b"h",
+            hash(&[("a", Some(10)), ("b", Some(10)), ("c", Some(50))]),
+            SetTtl::Clear,
+            0,
+        );
+        let names = |list: &[&'static str]| -> Vec<Bytes> {
+            list.iter()
+                .map(|name| Bytes::from_static(name.as_bytes()))
+                .collect()
+        };
+        assert_eq!(db.expire_fields(b"h", Some(&names(&["a", "c"])), 5), 0);
+        assert_eq!(
+            db.expire_fields(b"h", Some(&names(&["a", "a", "c", "nope"])), 20),
+            1
+        );
+        assert_eq!(db.expire_fields(b"missing", None, 20), 0);
+        let Some(Value::Hash(hash)) = db.get(b"h", 20) else {
+            panic!("gone")
+        };
+        assert_eq!(hash.len(), 2, "b is still stored");
+        assert_eq!(db.expire_fields(b"h", None, 60), 2);
+        assert!(!db.exists(b"h", 60));
+        assert_eq!(db.expired_fields(), 3);
+        assert_fields_indexed(&db);
+        assert_eq!(db.take_notes().len(), 2);
+    }
+
+    #[test]
+    fn the_field_index_follows_values_that_move_or_go() {
+        let mut db = Db::new();
+        db.set(b"h", hash(&[("a", Some(100))]), SetTtl::Clear, 0);
+        // A copy is indexed under its own key.
+        let copy = db.get(b"h", 0).unwrap().clone();
+        db.set(b"copy", copy, SetTtl::Clear, 0);
+        // A rename.
+        let (value, _) = db.take(b"h", 0).unwrap();
+        db.set(b"renamed", value, SetTtl::Clear, 0);
+        assert_eq!(db.volatile_hashes(), 2);
+        assert_fields_indexed(&db);
+        // Overwritten by another type, deleted, or expired as a whole key.
+        db.set(b"copy", s("x"), SetTtl::Clear, 0);
+        db.set(b"gone", hash(&[("a", Some(100))]), SetTtl::At(50), 0);
+        db.set(b"deleted", hash(&[("a", Some(100))]), SetTtl::Clear, 0);
+        db.remove(b"deleted", 0);
+        assert_eq!(db.volatile_hashes(), 2);
+        assert_eq!(db.active_expire(60, 10), 1);
+        assert_eq!(db.volatile_hashes(), 1);
+        assert_fields_indexed(&db);
+        let mut other = Db::new();
+        Db::swap_contents(&mut db, &mut other);
+        assert_eq!((db.volatile_hashes(), other.volatile_hashes()), (0, 1));
+        assert_fields_indexed(&other);
+        assert_eq!(other.active_expire_fields(100, 10), 1);
+        assert!(!other.exists(b"renamed", 100));
+        other.set(b"again", hash(&[("a", Some(200))]), SetTtl::Clear, 100);
+        other.clear();
+        assert_eq!(other.volatile_hashes(), 0);
+    }
+
+    #[test]
+    fn field_expiry_is_a_change_for_watchers_and_saved_first_by_a_snapshot() {
+        let mut db = Db::new();
+        db.set(
+            b"h",
+            hash(&[("a", Some(10)), ("b", None)]),
+            SetTtl::Clear,
+            0,
+        );
+        let version = db.watch(b"h", 0);
+        let (saved, sink) = collecting_sink();
+        db.begin_snapshot(5, sink);
+        db.active_expire_fields(20, 10);
+        assert_ne!(db.watch_version(b"h", 20), Some(version));
+        while !db.snapshot_step(1) {}
+        db.end_snapshot();
+        let saved = sorted(&saved);
+        assert_eq!(saved.len(), 1);
+        let Value::Hash(hash) = &saved[0].1 else {
+            panic!("not a hash")
+        };
+        assert_eq!(hash.field_expire_at(b"a"), Some(10), "as it was");
+    }
+
     #[test]
     fn expired_keys_are_recorded_only_while_tracking() {
         let mut db = Db::new();
@@ -1490,6 +1896,115 @@ mod tests {
             2 => (0u8..40).prop_map(Op::Tick),
             1 => Just(Op::ActiveExpire),
         ]
+    }
+
+    #[derive(Debug, Clone)]
+    enum FieldOp {
+        /// A new hash of a few fields at a key.
+        Create(u8),
+        Ttl(u8, u8, u8),
+        Persist(u8, u8),
+        Write(u8, u8),
+        Delete(u8, u8),
+        Lookup(u8, u8),
+        Copy(u8, u8),
+        Rename(u8, u8),
+        Overwrite(u8),
+        Remove(u8),
+        Tick(u8),
+        Reclaim(u8),
+    }
+
+    fn field_op() -> impl Strategy<Value = FieldOp> {
+        prop_oneof![
+            (0u8..4).prop_map(FieldOp::Create),
+            (0u8..4, 0u8..4, 0u8..50).prop_map(|(k, f, d)| FieldOp::Ttl(k, f, d)),
+            (0u8..4, 0u8..4).prop_map(|(k, f)| FieldOp::Persist(k, f)),
+            (0u8..4, 0u8..4).prop_map(|(k, f)| FieldOp::Write(k, f)),
+            (0u8..4, 0u8..4).prop_map(|(k, f)| FieldOp::Delete(k, f)),
+            (0u8..4, 0u8..4).prop_map(|(k, f)| FieldOp::Lookup(k, f)),
+            (0u8..4, 0u8..4).prop_map(|(a, b)| FieldOp::Copy(a, b)),
+            (0u8..4, 0u8..4).prop_map(|(a, b)| FieldOp::Rename(a, b)),
+            (0u8..4).prop_map(FieldOp::Overwrite),
+            (0u8..4).prop_map(FieldOp::Remove),
+            (0u8..30).prop_map(FieldOp::Tick),
+            (1u8..5).prop_map(FieldOp::Reclaim),
+        ]
+    }
+
+    proptest! {
+        /// Whatever happens to hashes with field TTLs, the field index
+        /// keeps up, and reclaiming everything due leaves no field past its
+        /// time and no empty hash.
+        #[test]
+        fn the_field_index_never_loses_a_hash(ops in prop::collection::vec(field_op(), 0..150)) {
+            let mut db = Db::new();
+            let mut now = 0u64;
+            let key = |k: u8| [b'k', k];
+            let field = |f: u8| Bytes::from(vec![b'f', f]);
+            for op in &ops {
+                match *op {
+                    FieldOp::Create(k) => db.set(
+                        &key(k),
+                        hash(&[("f\u{0}", None), ("f\u{1}", None), ("f\u{2}", None)]),
+                        SetTtl::Clear,
+                        now,
+                    ),
+                    FieldOp::Ttl(k, f, d) => {
+                        if let Some(Value::Hash(hash)) = db.get_mut(&key(k), now) {
+                            hash.set_field_expire(&field(f), now + u64::from(d) + 1);
+                            db.index_field_ttls(&key(k));
+                        }
+                    }
+                    FieldOp::Persist(k, f) => {
+                        if let Some(Value::Hash(hash)) = db.get_mut(&key(k), now) {
+                            hash.persist_field(&field(f));
+                        }
+                    }
+                    FieldOp::Write(k, f) => {
+                        if let Some(Value::Hash(hash)) = db.get_mut(&key(k), now) {
+                            hash.insert(&field(f), Bytes::from_static(b"w"));
+                        }
+                    }
+                    FieldOp::Delete(k, f) => {
+                        if let Some(Value::Hash(hash)) = db.get_mut(&key(k), now) {
+                            hash.remove(&field(f));
+                        }
+                        db.remove_if_empty(&key(k), now);
+                    }
+                    FieldOp::Lookup(k, f) => {
+                        db.expire_fields(&key(k), Some(&[field(f)]), now);
+                    }
+                    FieldOp::Copy(a, b) => {
+                        if let Some(value) = db.get(&key(a), now).cloned() {
+                            db.set(&key(b), value, SetTtl::Clear, now);
+                        }
+                    }
+                    FieldOp::Rename(a, b) => {
+                        if let Some((value, _)) = db.take(&key(a), now) {
+                            db.set(&key(b), value, SetTtl::Clear, now);
+                        }
+                    }
+                    FieldOp::Overwrite(k) => db.set(&key(k), s("x"), SetTtl::Clear, now),
+                    FieldOp::Remove(k) => {
+                        db.remove(&key(k), now);
+                    }
+                    FieldOp::Tick(d) => now += u64::from(d),
+                    FieldOp::Reclaim(max) => {
+                        db.active_expire_fields(now, usize::from(max));
+                    }
+                }
+                assert_fields_indexed(&db);
+            }
+            db.active_expire_fields(now, usize::MAX);
+            assert_fields_indexed(&db);
+            for (key, entry) in db.iter() {
+                if let Value::Hash(hash) = &entry.value {
+                    prop_assert!(!hash.is_empty(), "{key:?} is empty");
+                    prop_assert!(!hash.has_expired_fields(now), "{key:?} kept a field past its time");
+                }
+            }
+        }
     }
 
     proptest! {

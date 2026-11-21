@@ -57,6 +57,7 @@ window edges count as boundaries).
 | `str10m` | 100 × 10 MiB + 100,000 × 1,000 B | same |
 | `str100m` | 10 × 100 MiB + 100,000 × 1,000 B | same |
 | `coll` | 2 lists × 2,000,000 elements, 2 hashes × 1,000,000 fields, 100,000 × 1,000 B | every 10 ms (and at once on the BGSAVE reply) one `RPUSH` per list and one `HSET` of an existing field per hash |
+| `hashes` | 100,000 hashes × 10 fields of 100 bytes; the foreground clients `HGET` and `HSET` a random field instead of `GET` and `SET` | none |
 | `slow-small` | as `small` | none; needs `--save-delay-us` |
 | `slow-str10m` | as `str10m` | as `str10m`; needs `--save-delay-us` |
 | `idle` | as `small` | no traffic: `BGSAVE` (monitor polling only), then blocking `SAVE` |

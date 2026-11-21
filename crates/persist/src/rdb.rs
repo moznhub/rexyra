@@ -6,12 +6,18 @@
 //!
 //! **Writing** uses the plain, long-standing encodings (a list is a count
 //! followed by its elements, and so on). Every Redis version can load them,
-//! and converts them to its compact in-memory forms as it does.
+//! and converts them to its compact in-memory forms as it does. A hash with
+//! field TTLs is written in the form Redis 7.4 introduced for it (type 24,
+//! a hash with metadata), which needs RDB version 12: see
+//! [`Writer::with_version`] and [`needs_version`].
 //!
 //! **Reading** also understands the compact encodings Redis 7 writes
-//! (listpack, intset, quicklist) and LZF-compressed strings, so a `dump.rdb`
-//! produced by Redis loads here. Types this server does not have (streams,
-//! modules, hash fields with their own TTL) are reported as unsupported.
+//! (listpack, intset, quicklist, and Redis 7.4's listpack of hash fields
+//! with TTLs) and LZF-compressed strings, so a `dump.rdb` produced by Redis
+//! loads here. Types this server does not have (streams, modules) are
+//! reported as unsupported. Hash fields whose TTL has passed are read like
+//! the others; dropping them is up to the caller, who knows the time
+//! ([`Hash::drop_expired`]).
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -24,6 +30,9 @@ use crate::{crc64, lzf};
 
 /// The RDB version written. Redis 7.0 and later read it.
 pub const VERSION: u16 = 11;
+/// The RDB version written when there are hash field TTLs, which only
+/// Redis 7.4 and later read.
+pub const VERSION_FIELD_TTLS: u16 = 12;
 /// The newest RDB version this reader accepts (Redis 7.4).
 const MAX_VERSION: u16 = 12;
 
@@ -48,6 +57,11 @@ const TYPE_HASH_LISTPACK: u8 = 16;
 const TYPE_ZSET_LISTPACK: u8 = 17;
 const TYPE_LIST_QUICKLIST_2: u8 = 18;
 const TYPE_SET_LISTPACK: u8 = 20;
+/// A hash with field TTLs: the earliest TTL, then each field with its TTL
+/// relative to that one.
+const TYPE_HASH_METADATA: u8 = 24;
+/// A hash with field TTLs as a listpack of field, value, TTL triplets.
+const TYPE_HASH_LISTPACK_EX: u8 = 25;
 
 #[derive(Debug)]
 pub enum RdbError {
@@ -130,12 +144,19 @@ fn put_value(out: &mut Vec<u8>, value: &Value) {
             put_length(out, set.len() as u64);
             set.for_each(|member| put_string(out, member));
         }
+        Value::Hash(hash) if hash.is_compact() && hash.next_field_expiry().is_some() => {
+            // Type, then (once the key is spliced in after the type byte)
+            // the earliest TTL and the listpack.
+            out.push(TYPE_HASH_LISTPACK_EX);
+            put_listpack_ex(out, hash);
+        }
         Value::Hash(hash) => {
-            out.push(TYPE_HASH);
+            // Type, then (once the key is spliced in after the type byte)
+            // the earliest TTL if any, the count and the fields.
+            let min = put_hash_header(out, hash);
             put_length(out, hash.len() as u64);
-            for (field, value) in hash.iter() {
-                put_string(out, field);
-                put_string(out, value);
+            for (field, value) in hash.iter_stored() {
+                put_hash_field(out, hash, min, field, value);
             }
         }
         Value::ZSet(zset) => {
@@ -146,6 +167,155 @@ fn put_value(out: &mut Vec<u8>, value: &Value) {
                 out.extend_from_slice(&score.to_le_bytes());
             }
         }
+    }
+}
+
+/// Appends a small hash with field TTLs in the form Redis 7.4 keeps it in
+/// memory and writes it (type 25): the earliest TTL, then a listpack of
+/// field, value and TTL (zero for none) for each field, in the hash's own
+/// order, which is the one Redis requires: fields with a TTL first, by
+/// time.
+fn put_listpack_ex(out: &mut Vec<u8>, hash: &Hash) {
+    let min = hash.next_field_expiry().unwrap_or(0);
+    out.extend_from_slice(&min.to_le_bytes());
+    let mut entries = Vec::new();
+    let mut count = 0usize;
+    for (field, value) in hash.iter_stored() {
+        put_listpack_value(&mut entries, field);
+        put_listpack_value(&mut entries, value);
+        let at = hash.field_expire_at(field).unwrap_or(0);
+        put_listpack_integer(&mut entries, at as i64);
+        count += 3;
+    }
+    // Six bytes of header (total size, element count), the entries, and
+    // the end marker.
+    let total = 6 + entries.len() + 1;
+    let mut blob = Vec::with_capacity(total);
+    blob.extend_from_slice(&(total as u32).to_le_bytes());
+    blob.extend_from_slice(&(count.min(usize::from(u16::MAX)) as u16).to_le_bytes());
+    blob.extend_from_slice(&entries);
+    blob.push(0xFF);
+    put_string(out, &blob);
+}
+
+/// Appends one listpack entry: an integer if `text` is one written the
+/// usual way (as Redis stores it), otherwise a string.
+fn put_listpack_value(out: &mut Vec<u8>, text: &[u8]) {
+    match canonical_integer(text) {
+        Some(number) => put_listpack_integer(out, number),
+        None => put_listpack_string(out, text),
+    }
+}
+
+/// `text` as a 64-bit integer, if it is one in its shortest decimal form:
+/// no sign but a minus, no leading zero, no "-0".
+fn canonical_integer(text: &[u8]) -> Option<i64> {
+    if text.is_empty() || text.len() > 20 {
+        return None;
+    }
+    let number: i64 = std::str::from_utf8(text).ok()?.parse().ok()?;
+    (number.to_string().as_bytes() == text).then_some(number)
+}
+
+/// Appends one listpack entry holding a string, followed by its length.
+fn put_listpack_string(out: &mut Vec<u8>, text: &[u8]) {
+    let start = out.len();
+    match text.len() {
+        len @ 0..=63 => out.push(0x80 | len as u8),
+        len @ 64..=4095 => out.extend_from_slice(&[0xE0 | (len >> 8) as u8, len as u8]),
+        len => {
+            out.push(0xF0);
+            out.extend_from_slice(&(len as u32).to_le_bytes());
+        }
+    }
+    out.extend_from_slice(text);
+    put_listpack_backlen(out, out.len() - start);
+}
+
+/// Appends one listpack entry holding an integer, in the smallest of the
+/// integer encodings it fits.
+fn put_listpack_integer(out: &mut Vec<u8>, number: i64) {
+    let start = out.len();
+    match number {
+        0..=127 => out.push(number as u8),
+        -4096..=4095 => {
+            let raw = (number as u16) & 0x1FFF;
+            out.extend_from_slice(&[0xC0 | (raw >> 8) as u8, raw as u8]);
+        }
+        -32_768..=32_767 => {
+            out.push(0xF1);
+            out.extend_from_slice(&(number as i16).to_le_bytes());
+        }
+        -8_388_608..=8_388_607 => {
+            out.push(0xF2);
+            out.extend_from_slice(&(number as i32).to_le_bytes()[..3]);
+        }
+        -2_147_483_648..=2_147_483_647 => {
+            out.push(0xF3);
+            out.extend_from_slice(&(number as i32).to_le_bytes());
+        }
+        _ => {
+            out.push(0xF4);
+            out.extend_from_slice(&number.to_le_bytes());
+        }
+    }
+    put_listpack_backlen(out, out.len() - start);
+}
+
+/// The length of the entry just written, in the form that lets a listpack
+/// be walked backwards: seven bits per byte, the first byte the most
+/// significant, every byte but the first with the top bit set.
+fn put_listpack_backlen(out: &mut Vec<u8>, length: usize) {
+    let bytes = match length {
+        0..=127 => 1,
+        128..=16_382 => 2,
+        16_383..=2_097_150 => 3,
+        2_097_151..=268_435_454 => 4,
+        _ => 5,
+    };
+    for index in (0..bytes).rev() {
+        let group = ((length >> (7 * index)) & 0x7F) as u8;
+        out.push(if index == bytes - 1 {
+            group
+        } else {
+            group | 0x80
+        });
+    }
+}
+
+/// Appends the type byte of a hash and, if it has field TTLs, the earliest
+/// of them, which in the file follows the key. Returns that time, which the
+/// fields' TTLs are written relative to.
+fn put_hash_header(out: &mut Vec<u8>, hash: &Hash) -> Option<u64> {
+    let min = hash.next_field_expiry();
+    match min {
+        Some(min) => {
+            out.push(TYPE_HASH_METADATA);
+            out.extend_from_slice(&min.to_le_bytes());
+        }
+        None => out.push(TYPE_HASH),
+    }
+    min
+}
+
+/// Appends one field of a hash; `min` is what [`put_hash_header`] returned.
+fn put_hash_field(out: &mut Vec<u8>, hash: &Hash, min: Option<u64>, field: &[u8], value: &[u8]) {
+    if let Some(min) = min {
+        // Zero for none, otherwise one more than the distance from the
+        // earliest.
+        let ttl = hash.field_expire_at(field).map_or(0, |at| at - min + 1);
+        put_length(out, ttl);
+    }
+    put_string(out, field);
+    put_string(out, value);
+}
+
+/// The RDB version a value needs: [`VERSION_FIELD_TTLS`] for a hash with
+/// field TTLs, [`VERSION`] for everything else.
+pub fn needs_version(value: &Value) -> u16 {
+    match value {
+        Value::Hash(hash) if hash.next_field_expiry().is_some() => VERSION_FIELD_TTLS,
+        _ => VERSION,
     }
 }
 
@@ -162,12 +332,18 @@ pub struct Writer<W: Write> {
 
 impl<W: Write> Writer<W> {
     pub fn new(out: W) -> io::Result<Self> {
+        Self::with_version(out, VERSION)
+    }
+
+    /// A writer whose file says it is in RDB format `version`:
+    /// [`VERSION_FIELD_TTLS`] if any hash written may have field TTLs.
+    pub fn with_version(out: W, version: u16) -> io::Result<Self> {
         let mut writer = Writer {
             out,
             crc: 0,
             scratch: Vec::new(),
         };
-        writer.scratch = format!("REDIS{VERSION:04}").into_bytes();
+        writer.scratch = format!("REDIS{version:04}").into_bytes();
         writer.flush_scratch()?;
         Ok(writer)
     }
@@ -267,6 +443,8 @@ pub struct Progress {
     /// The next element of a list or sorted set, or the place in the table
     /// of a hash or set.
     next: u64,
+    /// The time a hash's field TTLs are written relative to.
+    min: Option<u64>,
 }
 
 /// Buckets of a hash or set looked at between checks of how much has been
@@ -307,7 +485,25 @@ pub fn encode_some(
             }
             Value::List(list) => (TYPE_LIST, list.len()),
             Value::Set(set) => (TYPE_SET, set.len()),
-            Value::Hash(hash) => (TYPE_HASH, hash.len()),
+            Value::Hash(hash) if hash.is_compact() => {
+                // Small: written whole.
+                let start = out.len();
+                put_value(out, value);
+                let mut key_bytes = Vec::with_capacity(key.len() + 9);
+                put_string(&mut key_bytes, key);
+                out.splice(start + 1..start + 1, key_bytes);
+                return true;
+            }
+            Value::Hash(hash) => {
+                let mut header = Vec::with_capacity(9);
+                let min = put_hash_header(&mut header, hash);
+                out.push(header[0]);
+                put_string(out, key);
+                out.extend_from_slice(&header[1..]);
+                put_length(out, hash.len() as u64);
+                progress.min = min;
+                return encode_some(out, key, value, None, progress, max_elements, max_bytes);
+            }
             Value::ZSet(zset) => (TYPE_ZSET_2, zset.len()),
         };
         out.push(kind);
@@ -345,9 +541,9 @@ pub fn encode_some(
         // A few buckets of the table at a time, in the order they lie in
         // memory.
         Value::Hash(hash) => loop {
+            let min = progress.min;
             let next = hash.visit_from(progress.next, PART_BUCKETS, |field, value| {
-                put_string(out, field);
-                put_string(out, value);
+                put_hash_field(out, hash, min, field, value);
                 added += 1;
             });
             match next {
@@ -375,8 +571,8 @@ pub fn encode_some(
 }
 
 /// Appends the version and checksum that end a `DUMP`-style payload.
-fn seal(mut payload: Vec<u8>) -> Vec<u8> {
-    payload.extend_from_slice(&VERSION.to_le_bytes());
+fn seal(mut payload: Vec<u8>, version: u16) -> Vec<u8> {
+    payload.extend_from_slice(&version.to_le_bytes());
     let crc = crc64::update(0, &payload);
     payload.extend_from_slice(&crc.to_le_bytes());
     payload
@@ -404,7 +600,7 @@ fn unseal(payload: &[u8]) -> Result<&[u8], RdbError> {
 pub fn dump_value(value: &Value) -> Vec<u8> {
     let mut payload = Vec::new();
     put_value(&mut payload, value);
-    seal(payload)
+    seal(payload, needs_version(value))
 }
 
 /// Decodes a payload produced by `DUMP`, here or on Redis.
@@ -425,7 +621,7 @@ pub fn dump_functions<'a>(libraries: impl Iterator<Item = &'a [u8]>) -> Vec<u8> 
         payload.push(OP_FUNCTION);
         put_string(&mut payload, code);
     }
-    seal(payload)
+    seal(payload, VERSION)
 }
 
 /// Decodes a `FUNCTION DUMP` payload into library sources.
@@ -614,6 +810,44 @@ impl<'a> Reader<'a> {
                 }
                 Value::Hash(hash)
             }
+            TYPE_HASH_METADATA => {
+                let min = u64::from_le_bytes(self.array()?);
+                let count = self.count(3)?;
+                let mut fields = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let ttl = self.length()? as u64;
+                    let at = match ttl {
+                        0 => None,
+                        ttl => Some(
+                            min.checked_add(ttl - 1)
+                                .ok_or(RdbError::Corrupt("bad field TTL"))?,
+                        ),
+                    };
+                    let field = self.string()?;
+                    fields.push((field, self.string()?, at));
+                }
+                Value::Hash(Hash::from_fields(fields, true))
+            }
+            TYPE_HASH_LISTPACK_EX => {
+                // The earliest TTL, only a hint.
+                self.array::<8>()?;
+                let items = listpack(&self.string()?)?;
+                if items.len() % 3 != 0 {
+                    return Err(RdbError::Corrupt("hash with an incomplete field"));
+                }
+                let mut fields = Vec::with_capacity(items.len() / 3);
+                let mut items = items.into_iter();
+                while let (Some(field), Some(value), Some(ttl)) =
+                    (items.next(), items.next(), items.next())
+                {
+                    let at = std::str::from_utf8(&ttl)
+                        .ok()
+                        .and_then(|text| text.parse::<u64>().ok())
+                        .ok_or(RdbError::Corrupt("bad field TTL"))?;
+                    fields.push((field, value, (at != 0).then_some(at)));
+                }
+                Value::Hash(Hash::from_fields(fields, true))
+            }
             TYPE_SET_INTSET => {
                 let mut set = Set::new();
                 for member in intset(&self.string()?)? {
@@ -669,9 +903,10 @@ impl<'a> Reader<'a> {
             }
             15 | 19 | 21 => return Err(RdbError::Unsupported("a stream".to_owned())),
             6 | 7 => return Err(RdbError::Unsupported("a module value".to_owned())),
-            22 | 24 | 25 => {
+            22 | 23 => {
                 return Err(RdbError::Unsupported(
-                    "a hash with per-field expiry".to_owned(),
+                    "a hash with field TTLs in the form of a Redis 7.4 release candidate"
+                        .to_owned(),
                 ))
             }
             9 | 10 | 12 | 13 | 14 => {
@@ -1006,6 +1241,161 @@ mod tests {
         assert!(matches!(restore_value(b"short"), Err(RdbError::Truncated)));
     }
 
+    fn ttl_hash() -> Hash {
+        let mut hash = Hash::new();
+        for (field, value) in [("a", "1"), ("b", "2"), ("c", "3")] {
+            hash.insert(field.as_bytes(), b(value));
+        }
+        hash.set_field_expire(b"b", 1_800_000_000_500);
+        hash.set_field_expire(b"a", 1_800_000_000_000);
+        hash
+    }
+
+    #[test]
+    fn hash_field_ttls_need_the_newer_format() {
+        let hash = Value::Hash(ttl_hash());
+        assert_eq!(needs_version(&hash), VERSION_FIELD_TTLS);
+        assert_eq!(needs_version(&Value::Hash(Hash::new())), VERSION);
+        // A hash whose field TTLs have all been removed is a plain hash again.
+        let Value::Hash(mut persisted) = hash.clone() else {
+            unreachable!()
+        };
+        persisted.persist_field(b"a");
+        persisted.persist_field(b"b");
+        assert_eq!(needs_version(&Value::Hash(persisted.clone())), VERSION);
+        assert_eq!(dump_value(&Value::Hash(persisted))[0], TYPE_HASH);
+
+        let payload = dump_value(&hash);
+        assert_eq!(payload[0], TYPE_HASH_LISTPACK_EX);
+        assert_eq!(&payload[payload.len() - 10..][..2], &12u16.to_le_bytes());
+        assert_eq!(restore_value(&payload).unwrap(), hash);
+
+        let mut writer = Writer::with_version(Vec::new(), VERSION_FIELD_TTLS).unwrap();
+        writer.select_db(0, 1, 0).unwrap();
+        writer.entry(b"h", &hash, Some(1_900_000_000_000)).unwrap();
+        let data = writer.finish().unwrap();
+        assert!(data.starts_with(b"REDIS0012"));
+        assert_eq!(
+            read_all(&data).unwrap(),
+            vec![Item::Entry {
+                db: 0,
+                key: b("h"),
+                value: hash,
+                expire_at: Some(1_900_000_000_000),
+            }]
+        );
+    }
+
+    fn hex(text: &str) -> Vec<u8> {
+        (0..text.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn a_small_hash_with_field_ttls_dumps_exactly_as_redis_does() {
+        let mut hash = Hash::new();
+        for (field, value) in [("a", "1"), ("b", "2"), ("c", "3")] {
+            hash.insert(field.as_bytes(), b(value));
+        }
+        hash.set_field_expire(b"a", 0x01a1_ff00_f03c);
+        // What Redis 7.4 replied to DUMP for the same hash.
+        assert_eq!(
+            dump_value(&Value::Hash(hash.clone())),
+            hex("193cf000ffa1010000242400000009008161020101f43cf000ffa1010000098162020201000181630203010001ff0c007619cd1c50a5a18e")
+        );
+        // A large table goes in the other form.
+        let mut big = hash;
+        for n in 0..600 {
+            big.insert(format!("f{n}").as_bytes(), b("v"));
+        }
+        let payload = dump_value(&Value::Hash(big.clone()));
+        assert_eq!(payload[0], TYPE_HASH_METADATA);
+        assert_eq!(restore_value(&payload).unwrap(), Value::Hash(big));
+    }
+
+    #[test]
+    fn listpack_integers_round_trip() {
+        for number in [
+            0i64,
+            1,
+            127,
+            128,
+            -1,
+            4095,
+            -4096,
+            4096,
+            32_767,
+            -32_768,
+            32_768,
+            8_388_607,
+            -8_388_608,
+            8_388_608,
+            i32::MAX as i64,
+            i32::MIN as i64,
+            i64::MAX,
+            i64::MIN,
+        ] {
+            let mut entries = Vec::new();
+            put_listpack_value(&mut entries, number.to_string().as_bytes());
+            put_listpack_value(&mut entries, b"007");
+            let mut blob = ((entries.len() + 7) as u32).to_le_bytes().to_vec();
+            blob.extend_from_slice(&2u16.to_le_bytes());
+            blob.extend_from_slice(&entries);
+            blob.push(0xFF);
+            assert_eq!(
+                listpack(&blob).unwrap(),
+                [b(&number.to_string()), b("007")],
+                "{number}"
+            );
+        }
+        assert_eq!(canonical_integer(b"-0"), None);
+        assert_eq!(canonical_integer(b"+1"), None);
+        assert_eq!(canonical_integer(b"12"), Some(12));
+    }
+
+    /// `DUMP` payloads taken from Redis 7.4.
+    #[test]
+    fn hashes_with_field_ttls_from_redis() {
+        // A listpack with TTLs (`listpackex`): a with a TTL, b and c without.
+        let Value::Hash(hash) = restore_value(&hex(
+            "193cf000ffa1010000242400000009008161020101f43cf000ffa1010000098162020201000181630203010001ff0c007619cd1c50a5a18e",
+        ))
+        .unwrap() else {
+            panic!("not a hash")
+        };
+        assert_eq!(hash.len(), 3);
+        assert_eq!(hash.field_expire_at(b"a"), Some(0x01a1_ff00_f03c));
+        assert_eq!(hash.field_expire_at(b"b"), None);
+        assert_eq!(hash.get(b"c", 0), Some(&b("3")));
+
+        // The same form after every TTL went: still `listpackex`.
+        let Value::Hash(hash) = restore_value(&hex(
+            "190000000000000000151500000006008161020101000181620202010001ff0c00401cf997f61b5652",
+        ))
+        .unwrap() else {
+            panic!("not a hash")
+        };
+        assert!(hash.has_field_ttls());
+        assert_eq!(hash.next_field_expiry(), None);
+        assert_eq!(hash.get(b"b", 0), Some(&b("2")));
+
+        // A hash table with TTLs: b and c with, an LZF-compressed long1
+        // without.
+        let Value::Hash(hash) = restore_value(&hex(
+            "1800505c18a301000003010162c00241f50163c00300056c6f6e6731c309404a017878e03d000178780c004c6c63100fb531c7",
+        ))
+        .unwrap() else {
+            panic!("not a hash")
+        };
+        assert_eq!(hash.field_expire_at(b"b"), Some(1_800_000_000_000));
+        assert_eq!(hash.field_expire_at(b"c"), Some(1_800_000_000_500));
+        assert_eq!(hash.field_expire_at(b"long1"), None);
+        assert_eq!(hash.get(b"long1", 0), Some(&b(&"x".repeat(74))));
+        assert_eq!(hash.get(b"c", 0), Some(&b("3")));
+    }
+
     #[test]
     fn function_payloads() {
         let libraries = [&b"#!lua name=a\n1"[..], &b"#!lua name=b\n2"[..]];
@@ -1122,9 +1512,15 @@ mod tests {
                 ints.insert(n.to_string().as_bytes());
                 zset.insert(&text(n), n as f64 / 3.0);
             }
+            // Every third field with a TTL of its own, some the same.
+            let mut with_ttls = hash.clone();
+            for n in (0..count).step_by(3) {
+                with_ttls.set_field_expire(&text(n), 1_900_000_000_000 + (n as u64 % 7));
+            }
             let values = [
                 Value::List((0..count).map(text).collect()),
                 Value::Hash(hash),
+                Value::Hash(with_ttls),
                 Value::Set(set),
                 Value::Set(ints),
                 Value::ZSet(zset),
@@ -1248,7 +1644,7 @@ mod tests {
         else {
             panic!("not a hash")
         };
-        assert_eq!(hash.get(b"g"), Some(&b("w")));
+        assert_eq!(hash.get(b"g", 0), Some(&b("w")));
         assert_eq!(hash.len(), 2);
         assert!(blob(TYPE_HASH_LISTPACK, &pack(&["f"])).is_err());
 
@@ -1296,7 +1692,7 @@ mod tests {
         for (kind, word) in [
             (15u8, "stream"),
             (7, "module"),
-            (24, "per-field"),
+            (22, "release candidate"),
             (13, "older"),
         ] {
             let error = Reader::new(&[0]).value(kind).unwrap_err().to_string();

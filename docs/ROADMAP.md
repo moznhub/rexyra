@@ -66,7 +66,6 @@ Today a connection only ever receives the reply to something it sent: it hands a
 | M | **Keyspace notifications.** Done: `notify-keyspace-events` and the events for every command that changes a key, for expiry and for eviction, compared with Redis 7.4 by [rexyra-keyevents](../tools/rexyra-keyevents/src/main.rs); see [COMPATIBILITY.md](COMPATIBILITY.md#keyspace-notifications). | The events for each command match Redis's table, compared with the multi-connection harness. With the setting off, which is the default, the cost is not measurable. |
 | S | **Commands the libraries ask for** on connecting or in common use and Rexyra lacks, as the smoke tests reveal them. `MOVE`, `SWAPDB` and `COMMAND GETKEYS` are done; `COMMAND GETKEYSANDFLAGS` remains. | |
 | L | **Client-side caching** (`CLIENT TRACKING`), which go-redis and redis-py use when asked to cache. It needs the server to remember which keys each client has read and to push an invalidation when one changes. | go-redis and redis-py with caching on get cache hits and see changes made by other clients. |
-| M | **Expiry of single hash fields** (`HEXPIRE` and its family, Redis 7.4), tested by redis-py, Jedis, Lettuce and go-redis. | The commands match Redis; fields expire in snapshots and the append-only file as keys do; Redis 7.4 snapshots with field expiry load. |
 
 ## 0.5.0: settings that survive, and a server you can leave alone
 

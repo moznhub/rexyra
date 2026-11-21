@@ -496,6 +496,49 @@ DEBUG SET-ACTIVE-EXPIRE 1
 !sleep 400
 FLUSHALL
 
+# --- hash field expiry ---------------------------------------------------------
+HSET fe a 1 b 2 c 3
+HEXPIRE fe 100 FIELDS 2 a b
+HEXPIRE fe 100 NX FIELDS 1 a
+HPERSIST fe FIELDS 1 a
+HPERSIST fe FIELDS 1 c
+HPERSIST nofe FIELDS 1 c
+HEXPIRE fe 0 FIELDS 1 b
+HEXPIRE nofe 100 FIELDS 1 a
+HTTL nofe FIELDS 1 a
+HTTL fe FIELDS 2 a c
+HPEXPIRE fe 1 FIELDS 1 a
+!sleep 300
+HSET fg x 1 y 2
+DEBUG SET-ACTIVE-EXPIRE 0
+HPEXPIRE fg 1 FIELDS 1 x
+!sleep 50
+HGET fg x
+HPEXPIRE fg 1 FIELDS 1 y
+!sleep 50
+HGETALL fg
+HLEN fg
+HGET fg y
+HSET fh p 1 q 2
+HPEXPIRE fh 1 FIELDS 1 p
+!sleep 50
+HSETNX fh p 3
+HINCRBY fh q 1
+DEBUG SET-ACTIVE-EXPIRE 1
+HSET fk z 1
+HPEXPIRE fk 1 FIELDS 1 z
+!sleep 300
+HSET fm a 1 b 2
+HEXPIRE fm 0 FIELDS 2 a b
+HSET fn a 1
+HEXPIRE fn 100 FIELDS 1 a
+HINCRBYFLOAT fn a 1
+HSET fn a 5
+HEXPIRE fn 100 FIELDS 1 a
+RENAME fn fn2
+HTTL fn2 FIELDS 1 a
+FLUSHALL
+
 # --- eviction -------------------------------------------------------------------
 CONFIG SET maxmemory-policy volatile-ttl
 SET plain1 v

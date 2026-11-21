@@ -181,9 +181,15 @@ fn publish(server: &mut Server, event: &'static str, key: &[u8], db: usize) {
     }
 }
 
-/// Acts on what the keyspace has noted since the last call: logs keys
-/// deleted by their TTL to the append-only file (as `DEL`), and publishes
-/// `expired`, `keymiss` and `new` events, in the order they happened.
+/// The classes whose events come from what the keyspace notes rather than
+/// from the command: `expired`, `keymiss`, `new`, and `hexpired` (with the
+/// `del` of a hash whose last fields expired).
+const NOTED: u32 = EXPIRED | KEY_MISS | NEW | HASH | GENERIC;
+
+/// Acts on what the keyspace has noted since the last call: logs what was
+/// deleted by a TTL to the append-only file (a key as `DEL`, hash fields
+/// as `HDEL`), and publishes the `expired`, `hexpired`, `keymiss` and
+/// `new` events, in the order they happened.
 pub fn flush(server: &mut Server, keyspace: &mut Keyspace) {
     for (db, note, key) in keyspace.take_notes() {
         let (class, event) = match note {
@@ -195,6 +201,22 @@ pub fn flush(server: &mut Server, keyspace: &mut Keyspace) {
             }
             Note::Missed => (KEY_MISS, "keymiss"),
             Note::Created => (NEW, "new"),
+            Note::FieldsExpired { fields, emptied } => {
+                // Deleting a hash's last fields deletes the hash, on
+                // replay too.
+                if let Some(aof) = &mut server.aof {
+                    let mut command: Vec<&[u8]> = vec![b"HDEL", &key];
+                    command.extend(fields.iter().map(|field| &field[..]));
+                    aof.log(db, &command);
+                }
+                if server.notify_flags & HASH != 0 {
+                    publish(server, "hexpired", &key, db);
+                }
+                if !emptied {
+                    continue;
+                }
+                (GENERIC, "del")
+            }
         };
         if server.notify_flags & class != 0 {
             publish(server, event, &key, db);
@@ -206,7 +228,7 @@ pub fn flush(server: &mut Server, keyspace: &mut Keyspace) {
 /// command.
 #[inline]
 pub(crate) fn settle(ctx: &mut Ctx<'_>) {
-    if ctx.server.aof.is_some() || ctx.server.notify_flags & (EXPIRED | KEY_MISS | NEW) != 0 {
+    if ctx.server.aof.is_some() || ctx.server.notify_flags & NOTED != 0 {
         flush(ctx.server, ctx.keyspace);
     }
 }
@@ -214,7 +236,11 @@ pub(crate) fn settle(ctx: &mut Ctx<'_>) {
 /// Makes the keyspace note what the append-only file and the enabled
 /// notifications need. Call whenever either changes.
 pub fn sync(server: &Server, keyspace: &mut Keyspace) {
-    keyspace.track_expired(server.aof.is_some() || server.notify_flags & EXPIRED != 0);
+    // Expired hash fields raise `hexpired` (h) and, for a hash left
+    // empty, `del` (g).
+    keyspace.track_expired(
+        server.aof.is_some() || server.notify_flags & (EXPIRED | HASH | GENERIC) != 0,
+    );
     keyspace.note_created(server.notify_flags & NEW != 0);
 }
 
@@ -544,6 +570,17 @@ mod tests {
                 ("HDEL h nofield", &[]),
                 ("HDEL h f g n", &["h hdel", "h del"]),
                 ("HGET h f", &["h keymiss"]),
+                // hash field expiry
+                ("HSET e a 1 b 2", &["e new", "e hset"]),
+                ("HEXPIRE e 100 FIELDS 1 a", &["e hexpire"]),
+                ("HEXPIRE e 100 NX FIELDS 1 a", &[]),
+                ("HPERSIST e FIELDS 1 a", &["e hpersist"]),
+                ("HPERSIST e FIELDS 1 b", &[]),
+                ("HEXPIRE e 0 FIELDS 2 a b", &["e hdel", "e del"]),
+                // One miss each, though they look twice.
+                ("HTTL e FIELDS 1 a", &["e keymiss"]),
+                ("HRANDFIELD e", &["e keymiss"]),
+                ("HPERSIST e FIELDS 1 a", &[]),
                 // sets
                 ("SADD x a b", &["x new", "x sadd"]),
                 ("SADD x a", &[]),

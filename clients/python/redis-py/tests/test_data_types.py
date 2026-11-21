@@ -6,10 +6,6 @@ import pytest
 import redis
 
 
-def differs(reason):
-    return pytest.mark.xfail("server_is_rexyra", reason=reason, strict=True)
-
-
 def pairs(reply):
     """WITHSCORES replies as (member, score) tuples, whichever protocol.
 
@@ -129,7 +125,6 @@ def test_hashes(r, p):
         r.lpush(k, "x")
 
 
-@differs("HEXPIRE, HPEXPIRE, HTTL, HPERSIST (Redis 7.4) are not implemented: ERR unknown command")
 def test_hash_field_expiry(r, p):
     # HEXPIRE and friends are new in Redis 7.4.
     if not hasattr(r, "hexpire"):

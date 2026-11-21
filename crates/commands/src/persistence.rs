@@ -141,7 +141,8 @@ pub(crate) fn write_snapshot(
     now: u64,
     path: &Path,
 ) -> io::Result<()> {
-    let mut writer = Writer::new(BufWriter::new(File::create(path)?))?;
+    let mut writer =
+        Writer::with_version(BufWriter::new(File::create(path)?), rdb_version(keyspace))?;
     write_preamble(&mut writer, server, now)?;
     for index in 0..keyspace.len() {
         let db = keyspace.db(index);
@@ -164,6 +165,16 @@ pub(crate) fn write_snapshot(
     file.flush()?;
     // Make sure the data is on disk before the rename makes it the snapshot.
     file.get_ref().sync_all()
+}
+
+/// The RDB format version a snapshot of `keyspace` needs: the newer one,
+/// which only Redis 7.4 and later read, only if a hash has field TTLs.
+fn rdb_version(keyspace: &Keyspace) -> u16 {
+    if keyspace.has_field_ttls() {
+        rdb::VERSION_FIELD_TTLS
+    } else {
+        rdb::VERSION
+    }
 }
 
 /// The start of every snapshot: metadata, then the function libraries.
@@ -680,6 +691,8 @@ pub struct BackgroundSave {
 /// What the writer thread needs to know about the server as it was when
 /// the save began.
 struct Header {
+    /// The RDB format version; see [`rdb_version`].
+    version: u16,
     now: u64,
     libraries: Vec<Bytes>,
     /// Keys and keys-with-TTL of each database.
@@ -701,7 +714,10 @@ fn writer_thread(
 ) -> io::Result<()> {
     let abandoned = || io::Error::other("the background save was abandoned");
     let outcome = (|| {
-        let mut writer = Writer::new(BufWriter::with_capacity(WRITE_BUFFER_BYTES, file))?;
+        let mut writer = Writer::with_version(
+            BufWriter::with_capacity(WRITE_BUFFER_BYTES, file),
+            header.version,
+        )?;
         write_header(&mut writer, header.now, header.libraries.iter())?;
         let mut current_db = None;
         // Pauses shorter than the clock can time are saved up.
@@ -802,6 +818,7 @@ pub(crate) fn start_background(
     let file = File::create(&temporary)?;
 
     let header = Header {
+        version: rdb_version(keyspace),
         delay_micros: server.rdb_key_save_delay,
         now,
         libraries: server
@@ -1127,8 +1144,11 @@ pub fn format_save_points(points: &[(u64, u64)]) -> String {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Loaded {
     pub keys: usize,
-    /// Keys left out because their TTL had already passed.
+    /// Keys left out because their TTL had already passed, or because they
+    /// were hashes all of whose fields' TTLs had.
     pub expired: usize,
+    /// Hash fields left out because their TTL had already passed.
+    pub expired_fields: usize,
     pub libraries: usize,
 }
 
@@ -1172,9 +1192,19 @@ pub(crate) fn load_bytes(
             } else if expire_at.is_some_and(|at| at <= now) {
                 loaded.expired += 1;
             } else {
-                let ttl = expire_at.map_or(SetTtl::Clear, SetTtl::At);
-                keyspace.db(db).set(&key, value, ttl, now);
-                loaded.keys += 1;
+                let mut value = value;
+                // Hash fields whose TTL has passed are left out, and a hash
+                // left with none, as Redis does.
+                if let Value::Hash(hash) = &mut value {
+                    loaded.expired_fields += hash.drop_expired(now);
+                }
+                if value.is_empty_collection() {
+                    loaded.expired += 1;
+                } else {
+                    let ttl = expire_at.map_or(SetTtl::Clear, SetTtl::At);
+                    keyspace.db(db).set(&key, value, ttl, now);
+                    loaded.keys += 1;
+                }
             }
         }
     })
@@ -1314,7 +1344,7 @@ pub(crate) fn restore(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
         if !replace && db.exists(key, now) {
             return Err(Frame::error("BUSYKEY Target key name already exists."));
         }
-        let value = rdb::restore_value(payload).map_err(|error| {
+        let mut value = rdb::restore_value(payload).map_err(|error| {
             Frame::error(match error {
                 rdb::RdbError::BadChecksum
                 | rdb::RdbError::UnsupportedVersion(_)
@@ -1330,7 +1360,15 @@ pub(crate) fn restore(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
             (at, true) => Some(at),
             (ttl, false) => Some(now.saturating_add(ttl)),
         };
-        let already_expired = expire_at.is_some_and(|at| at <= now);
+        // Hash fields whose TTL has passed are left out, as Redis does; a
+        // hash left with none is not created.
+        let dropped_fields = match &mut value {
+            Value::Hash(hash) => hash.drop_expired(now),
+            _ => 0,
+        };
+        let already_expired = expire_at.is_some_and(|at| at <= now) || value.is_empty_collection();
+        // Logged without the fields left out: on replay nothing expires.
+        let restored = (dropped_fields > 0 && !already_expired).then(|| rdb::dump_value(&value));
         // A key replaced is deleted first; the restored one is new.
         let deleted = db.remove(key, now);
         if already_expired {
@@ -1352,7 +1390,7 @@ pub(crate) fn restore(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
                     b"RESTORE",
                     key,
                     expire_at.unwrap_or(0).to_string().as_bytes(),
-                    payload,
+                    restored.as_deref().unwrap_or(payload),
                     b"REPLACE",
                     b"ABSTTL",
                 ])
@@ -1415,6 +1453,7 @@ mod tests {
             Loaded {
                 keys: 9,
                 expired: 0,
+                expired_fields: 0,
                 libraries: 0
             }
         );
@@ -1461,6 +1500,137 @@ mod tests {
         let (mut fresh, loaded) = reload(&h);
         assert_eq!((loaded.keys, loaded.expired), (1, 1));
         assert_eq!(fresh.run("KEYS *"), Frame::Array(bulks(&["keep"])));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn ints(values: &[i64]) -> Frame {
+        Frame::Array(values.iter().map(|&n| Frame::Integer(n)).collect())
+    }
+
+    #[test]
+    fn hash_field_ttls_are_saved_and_loaded() {
+        let dir = temp_dir("field-ttls");
+        let mut h = harness_in(&dir);
+        h.run("HSET plain a 1");
+        h.run("SAVE");
+        // Without field TTLs the file is in the format Redis 7.0 reads.
+        assert!(fs::read(snapshot_path(&h.server))
+            .unwrap()
+            .starts_with(b"REDIS0011"));
+
+        h.run("HSET small a 1 b 2 c 3");
+        h.run("HPEXPIREAT small 1800000000000 FIELDS 1 b");
+        h.run("HPEXPIRE small 1000 FIELDS 1 c");
+        h.run("HSET gone x 1");
+        h.run("HPEXPIRE gone 1000 FIELDS 1 x");
+        let mut big = vec!["HSET".to_owned(), "big".to_owned()];
+        for n in 0..1_000 {
+            big.extend([format!("f{n}"), n.to_string()]);
+        }
+        h.cmd(&big.iter().map(String::as_str).collect::<Vec<_>>());
+        h.run("HPEXPIREAT big 1800000000000 FIELDS 2 f1 f2");
+        h.run("HPEXPIRE big 1000 FIELDS 1 f3");
+        h.run("PEXPIRE big 100000");
+        h.run("HSET persisted a 1");
+        h.run("HPEXPIRE persisted 1000 FIELDS 1 a");
+        h.run("HPERSIST persisted FIELDS 1 a");
+        h.run("SAVE");
+        // Field TTLs need the format Redis 7.4 introduced.
+        assert!(fs::read(snapshot_path(&h.server))
+            .unwrap()
+            .starts_with(b"REDIS0012"));
+
+        let (mut fresh, loaded) = reload(&h);
+        assert_eq!(
+            (loaded.keys, loaded.expired, loaded.expired_fields),
+            (5, 0, 0)
+        );
+        let c_at = (h.now + 1000) as i64;
+        assert_eq!(
+            fresh.run("HPEXPIRETIME small FIELDS 3 a b c"),
+            ints(&[-1, 1_800_000_000_000, c_at])
+        );
+        assert_eq!(
+            fresh.run("HKEYS small"),
+            Frame::Array(bulks(&["c", "b", "a"]))
+        );
+        assert_eq!(fresh.run("OBJECT ENCODING small"), bulk("listpackex"));
+        assert_eq!(
+            fresh.run("HPEXPIRETIME big FIELDS 4 f0 f1 f2 f3"),
+            ints(&[-1, 1_800_000_000_000, 1_800_000_000_000, c_at])
+        );
+        assert_eq!(fresh.run("PTTL big"), Frame::Integer(100_000));
+        assert_eq!(fresh.run("HLEN big"), Frame::Integer(1_000));
+        assert_eq!(fresh.run("HGET persisted a"), bulk("1"));
+        // The reloaded hashes reclaim their fields like any others.
+        assert!(
+            matches!(fresh.run("INFO keyspace"), Frame::Verbatim { data, .. }
+            if data.ends_with(b"subexpiry=3\r\n"))
+        );
+        fresh.advance(1_000);
+        fresh.keyspace.cron(fresh.now, 100);
+        assert_eq!(fresh.run("HLEN big"), Frame::Integer(999));
+        assert_eq!(fresh.run("EXISTS gone"), Frame::Integer(0));
+
+        // Fields whose time passes before the next start are left out, and
+        // a hash with none left with them.
+        h.advance(5_000);
+        let (mut later, loaded) = reload(&h);
+        assert_eq!(
+            (loaded.keys, loaded.expired, loaded.expired_fields),
+            (4, 1, 3)
+        );
+        assert_eq!(later.run("HKEYS small"), Frame::Array(bulks(&["b", "a"])));
+        assert_eq!(later.run("HLEN big"), Frame::Integer(999));
+        assert_eq!(later.run("EXISTS gone"), Frame::Integer(0));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn bgsave_captures_field_ttls_as_they_were() {
+        let dir = temp_dir("bgsave-field-ttls");
+        let mut h = harness_in(&dir);
+        large_collections(&mut h, 20_000);
+        for n in 0..2_000 {
+            h.cmd(&["HSET", &format!("h:{n}"), "a", "1", "b", "2"]);
+            h.cmd(&["HPEXPIRE", &format!("h:{n}"), "500", "FIELDS", "1", "a"]);
+        }
+        let mut expire = vec!["HPEXPIRE", "bighash", "500", "FIELDS", "1000"];
+        let names: Vec<String> = (0..1_000).map(|n| format!("field-{n}")).collect();
+        expire.extend(names.iter().map(String::as_str));
+        h.cmd(&expire);
+        let started = h.now;
+        h.run("BGSAVE");
+        // While it runs: TTLs change, and fields expire and are reclaimed,
+        // in the big hash too, which cannot wait for its capture there.
+        h.run("HPERSIST h:0 FIELDS 1 a");
+        h.run("HPEXPIRE h:1 10000 FIELDS 1 b");
+        h.run("HDEL h:2 a");
+        h.advance(1_000);
+        h.keyspace.cron(h.now, 100_000);
+        assert_eq!(h.run("HLEN h:3"), Frame::Integer(1));
+        assert_eq!(h.run("HLEN bighash"), Frame::Integer(19_000));
+        finish_bgsave(&mut h);
+        assert!(h.server.last_save_ok);
+
+        // Loaded as of the moment the save began.
+        let mut fresh = harness_in(&dir);
+        fresh.now = started;
+        let (keyspace, _) = load(&mut fresh.server, fresh.now).unwrap().unwrap();
+        fresh.keyspace = keyspace;
+        let at = (started + 500) as i64;
+        for n in 0..4 {
+            assert_eq!(
+                fresh.cmd(&["HPEXPIRETIME", &format!("h:{n}"), "FIELDS", "2", "a", "b"]),
+                ints(&[at, -1]),
+                "h:{n}"
+            );
+        }
+        assert_eq!(fresh.run("HLEN bighash"), Frame::Integer(20_000));
+        assert_eq!(
+            fresh.run("HPEXPIRETIME bighash FIELDS 2 field-0 field-1000"),
+            ints(&[at, -1])
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 

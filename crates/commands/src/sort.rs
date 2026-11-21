@@ -103,7 +103,7 @@ fn lookup(db: &mut Db, pattern: &[u8], element: &Bytes, now: u64) -> Option<Byte
     // A real lookup, as in Redis: an expired key goes, a missing one is a
     // `keymiss`.
     match (db.get(&key, now)?, field) {
-        (Value::Hash(hash), Some(field)) => hash.get(field).cloned(),
+        (Value::Hash(hash), Some(field)) => hash.get(field, now).cloned(),
         (Value::String(value), None) => Some(value.clone()),
         _ => None,
     }
@@ -228,6 +228,7 @@ fn sorted_elements(
 fn run(ctx: &mut Ctx<'_>, args: &[Bytes], read_only: bool) -> Frame {
     reply((|| {
         let options = parse(&args[2..], read_only)?;
+        let logging = ctx.server.aof.is_some();
         // Everything but the destination is read as `GET` reads: missing
         // keys are `keymiss` events.
         notify::reading(ctx, true);
@@ -261,16 +262,31 @@ fn run(ctx: &mut Ctx<'_>, args: &[Bytes], read_only: bool) -> Frame {
             ));
         };
         let stored = output.len() as i64;
+        // A list cannot hold null, so a missing value is stored empty.
+        let list: VecDeque<Bytes> = output.into_iter().map(Option::unwrap_or_default).collect();
+        // With `BY` or `GET` the result depends on other keys and hash
+        // fields, some of which may have been past their TTL but not yet
+        // reclaimed; on replay nothing expires, so the result is logged.
+        let logged = (logging && (options.by.is_some() || !options.gets.is_empty())).then(|| {
+            let mut commands = vec![crate::aof::command(&[b"DEL", destination])];
+            if !list.is_empty() {
+                let mut push: Vec<&[u8]> = vec![b"RPUSH", destination];
+                push.extend(list.iter().map(|value| &value[..]));
+                commands.push(crate::aof::command(&push));
+            }
+            commands
+        });
         let (db, now) = ctx.db();
-        if output.is_empty() {
+        if list.is_empty() {
             if db.remove(destination, now) {
                 notify(ctx, GENERIC, "del", destination);
             }
         } else {
-            // A list cannot hold null, so a missing value is stored empty.
-            let list: VecDeque<Bytes> = output.into_iter().map(Option::unwrap_or_default).collect();
             db.set(destination, Value::List(list), SetTtl::Clear, now);
             notify(ctx, LIST, "sortstore", destination);
+        }
+        if let Some(commands) = logged {
+            ctx.log_instead(|| commands);
         }
         Ok(Frame::Integer(stored))
     })())

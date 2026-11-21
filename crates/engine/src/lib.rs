@@ -157,6 +157,24 @@ impl Keyspace {
         notes
     }
 
+    /// Hash fields deleted because their TTL passed, in every database
+    /// (`expired_subkeys` in `INFO stats`).
+    pub fn expired_fields(&self) -> u64 {
+        self.dbs.iter().map(Db::expired_fields).sum()
+    }
+
+    pub fn reset_expired_fields(&mut self) {
+        for db in &mut self.dbs {
+            db.reset_expired_fields();
+        }
+    }
+
+    /// Whether any hash in any database has field TTLs, which a snapshot
+    /// needs the newer RDB format for.
+    pub fn has_field_ttls(&self) -> bool {
+        self.dbs.iter().any(|db| db.volatile_hashes() > 0)
+    }
+
     /// See [`Db::settle_watches`]; applies to every database.
     pub fn settle_watches(&mut self) {
         for db in &mut self.dbs {
@@ -213,14 +231,17 @@ impl Keyspace {
     }
 
     /// Background maintenance, called periodically between commands: removes
-    /// keys whose TTL has passed and advances any in-progress rehash.
+    /// keys and hash fields whose TTL has passed and advances any
+    /// in-progress rehash. Returns how many keys expired.
     ///
-    /// `max_expired` bounds the work done per database so one call never
-    /// stalls command execution for long.
+    /// `max_expired` bounds the work done per database, for keys and for
+    /// fields each, so one call never stalls command execution for long:
+    /// a hash with a million fields due is reclaimed over many calls.
     pub fn cron(&mut self, now: u64, max_expired: usize) -> usize {
         let mut expired = 0;
         for db in &mut self.dbs {
             expired += db.active_expire(now, max_expired);
+            db.active_expire_fields(now, max_expired);
             db.rehash_steps(64);
         }
         expired
