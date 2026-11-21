@@ -56,12 +56,17 @@ pub fn random_u64() -> u64 {
 /// The fixed set of logical databases selected with `SELECT`.
 pub struct Keyspace {
     dbs: Vec<Db>,
+    /// Databases whose contents [`Keyspace::swap`] replaced while some
+    /// client was waiting for a key, since the last
+    /// [`Keyspace::take_swapped`].
+    swapped: Vec<usize>,
 }
 
 impl Keyspace {
     pub fn new(databases: usize) -> Self {
         Self {
             dbs: (0..databases.max(1)).map(|_| Db::new()).collect(),
+            swapped: Vec::new(),
         }
     }
 
@@ -157,6 +162,32 @@ impl Keyspace {
             written.extend(db.take_written().into_iter().map(|key| (index, key)));
         }
         written
+    }
+
+    /// Swaps the contents of databases `a` and `b` (`SWAPDB`). Clients keep
+    /// their database number and see the other contents. A snapshot in
+    /// progress moves with the contents, so it still saves each database as
+    /// it was when the snapshot began. Watchers of a key present in either
+    /// database see a change.
+    ///
+    /// # Panics
+    /// If either index is out of range.
+    pub fn swap(&mut self, a: usize, b: usize) {
+        if a == b {
+            return;
+        }
+        let (low, high) = (a.min(b), a.max(b));
+        let (left, right) = self.dbs.split_at_mut(high);
+        Db::swap_contents(&mut left[low], &mut right[0]);
+        if self.dbs[a].is_tracking_writes() {
+            self.swapped.extend([a, b]);
+        }
+    }
+
+    /// The databases [`Keyspace::swap`] changed while writes were tracked,
+    /// whose keys may now be what waiting clients want.
+    pub fn take_swapped(&mut self) -> Vec<usize> {
+        std::mem::take(&mut self.swapped)
     }
 
     pub fn flush_all(&mut self) {

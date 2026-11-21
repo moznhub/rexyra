@@ -450,6 +450,31 @@ impl Db {
         self.watched.get(key).map(|watched| watched.version)
     }
 
+    /// Exchanges the keys of two databases, with their TTLs and any snapshot
+    /// in progress, leaving each database's watchers and settings in place.
+    /// A watched key present in either database counts as changed in both.
+    pub(crate) fn swap_contents(a: &mut Db, b: &mut Db) {
+        std::mem::swap(&mut a.dict, &mut b.dict);
+        std::mem::swap(&mut a.expires, &mut b.expires);
+        std::mem::swap(&mut a.epoch, &mut b.epoch);
+        std::mem::swap(&mut a.snapshot, &mut b.snapshot);
+        Db::touch_swapped(a, b);
+        Db::touch_swapped(b, a);
+    }
+
+    fn touch_swapped(this: &mut Db, other: &Db) {
+        this.settle_watches();
+        for (key, watched) in &mut this.watched {
+            if this.dict.find(key).is_some() || other.dict.find(key).is_some() {
+                watched.version += 1;
+            }
+        }
+    }
+
+    pub(crate) fn is_tracking_writes(&self) -> bool {
+        self.track_writes
+    }
+
     /// Records that `key` may have changed, for the benefit of watchers.
     fn touch(&mut self, key: &[u8]) {
         if !self.watched.is_empty() {
@@ -954,6 +979,39 @@ mod tests {
         assert!(changed(&mut db, 200));
         db.clear();
         assert!(changed(&mut db, 200));
+    }
+
+    #[test]
+    fn swapping_contents_changes_watched_keys_present_on_either_side() {
+        let mut a = Db::new();
+        let mut b = Db::new();
+        a.set(b"only-a", s("1"), SetTtl::At(500), 0);
+        b.set(b"only-b", s("2"), SetTtl::Clear, 0);
+        let before: Vec<u64> = ["only-a", "only-b", "nowhere"]
+            .iter()
+            .map(|key| a.watch(key.as_bytes(), 0))
+            .collect();
+        let watched_b = b.watch(b"only-a", 0);
+
+        Db::swap_contents(&mut a, &mut b);
+
+        assert!(a.get(b"only-b", 0).is_some());
+        assert!(a.get(b"only-a", 0).is_none());
+        assert_eq!(
+            b.expire_at(b"only-a", 0),
+            Some(Some(500)),
+            "the TTL moves too"
+        );
+        assert_consistent(&a);
+        assert_consistent(&b);
+        assert_ne!(a.watch_version(b"only-a", 0), Some(before[0]));
+        assert_ne!(a.watch_version(b"only-b", 0), Some(before[1]));
+        assert_eq!(
+            a.watch_version(b"nowhere", 0),
+            Some(before[2]),
+            "a key in neither database is not disturbed"
+        );
+        assert_ne!(b.watch_version(b"only-a", 0), Some(watched_b));
     }
 
     #[test]

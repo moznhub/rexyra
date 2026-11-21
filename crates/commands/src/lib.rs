@@ -298,6 +298,16 @@ pub fn dispatch(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
             // to yet waits for it, rather than make everyone wait while the
             // whole collection is captured at once.
             if ctx.server.bgsave.is_some() && spec.flags.contains(&"write") {
+                // `SWAPDB` would move data from under the save's feet, so it
+                // waits until the save has captured everything.
+                if spec.name == "swapdb" && persistence::capturing(ctx.server) {
+                    ctx.block = Some(BlockRequest {
+                        keys: Vec::new(),
+                        kind: BlockKind::Capture,
+                        deadline: None,
+                    });
+                    return Frame::NullArray;
+                }
                 let keys = persistence::capture_blockers(ctx, spec, args);
                 if !keys.is_empty() {
                     ctx.block = Some(BlockRequest {

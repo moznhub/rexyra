@@ -174,6 +174,34 @@ async fn watch_detects_a_write_from_another_connection() {
 }
 
 #[tokio::test]
+async fn swapdb_wakes_a_blocked_client_and_aborts_a_watching_transaction() {
+    let addr = start().await;
+    let mut waiter = Client::connect(addr).await;
+    let mut watcher = Client::connect(addr).await;
+    let mut other = Client::connect(addr).await;
+
+    other.check("SELECT 2", "+OK\r\n").await;
+    other.check("RPUSH jobs one", ":1\r\n").await;
+    watcher.check("WATCH jobs", "+OK\r\n").await;
+
+    // Waits in database 0, where there is no list yet.
+    waiter.0.write_all(b"BLPOP jobs 5\r\n").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    other.check("SWAPDB 0 2", "+OK\r\n").await;
+    let expected = "*2\r\n$4\r\njobs\r\n$3\r\none\r\n";
+    let mut got = vec![0u8; expected.len()];
+    timeout(TIMEOUT, waiter.0.read_exact(&mut got))
+        .await
+        .expect("the blocked client was not woken")
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&got), expected);
+
+    watcher.check("MULTI", "+OK\r\n").await;
+    watcher.check("SET x 1", "+QUEUED\r\n").await;
+    watcher.check("EXEC", "*-1\r\n").await;
+}
+
+#[tokio::test]
 async fn a_transaction_is_not_interleaved_with_other_clients() {
     let addr = start().await;
     let workers: Vec<_> = (0..8)

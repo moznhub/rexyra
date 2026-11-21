@@ -734,6 +734,15 @@ impl State {
             for queue in self.waiters.values() {
                 add(queue, &self.parked);
             }
+            // `SWAPDB` waits for the whole save, not for a key.
+            let mut keyless: Vec<u64> = self
+                .parked
+                .iter()
+                .filter(|(_, parked)| held(parked) && parked.request.keys.is_empty())
+                .map(|(id, _)| *id)
+                .collect();
+            keyless.sort_unstable();
+            ready.extend(keyless);
         }
         if ready.is_empty() {
             return;
@@ -993,7 +1002,17 @@ impl State {
     /// so this repeats until nothing new was written.
     fn serve_written_keys(&mut self) {
         loop {
-            let written = self.keyspace.take_written();
+            let mut written = self.keyspace.take_written();
+            // After `SWAPDB`, any key a client waits for in either database
+            // may now be there.
+            for db in self.keyspace.take_swapped() {
+                written.extend(
+                    self.waiters
+                        .keys()
+                        .filter(|(waiting_db, _)| *waiting_db == db)
+                        .cloned(),
+                );
+            }
             if written.is_empty() {
                 return;
             }

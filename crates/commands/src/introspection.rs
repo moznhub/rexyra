@@ -47,9 +47,35 @@ pub(crate) fn command(_ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
                 .map(|spec| (Frame::bulk(spec.name), docs(spec)))
                 .collect(),
         )
+    } else if is(sub, "GETKEYS") {
+        getkeys(sub, names)
     } else {
         unknown_subcommand("COMMAND", sub)
     }
+}
+
+/// `COMMAND GETKEYS command [arg ...]`: the keys that command would name.
+fn getkeys(sub: &Bytes, command: &[Bytes]) -> Frame {
+    let Some(name) = command.first() else {
+        return wrong_subcommand_arity("command", sub);
+    };
+    let Some(spec) = lookup(name) else {
+        return Frame::error("ERR Invalid command specified");
+    };
+    let arity = i64::from(spec.arity);
+    let given = command.len() as i64;
+    if (arity > 0 && given != arity) || (arity < 0 && given < -arity) {
+        return Frame::error("ERR Invalid number of arguments specified for command");
+    }
+    if spec.first_key == 0 && !crate::acl::has_movable_keys(spec) {
+        return Frame::error("ERR The command has no key arguments");
+    }
+    Frame::Array(
+        crate::acl::command_keys(spec, command)
+            .into_iter()
+            .map(|key| Frame::Bulk(key.clone()))
+            .collect(),
+    )
 }
 
 /// The ten-element description Redis 7 returns for each command.
@@ -86,6 +112,78 @@ mod tests {
     use crate::testing::one;
     use crate::COMMANDS;
     use rexyra_resp::Frame;
+
+    fn keys(names: &[&str]) -> Frame {
+        Frame::Array(
+            names
+                .iter()
+                .map(|name| Frame::bulk(name.to_string()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn getkeys() {
+        // Compared with Redis 7.4.
+        assert_eq!(
+            one(&["COMMAND", "GETKEYS", "MSET", "a", "1", "b", "2"]),
+            keys(&["a", "b"])
+        );
+        assert_eq!(one(&["COMMAND", "GETKEYS", "get", "a"]), keys(&["a"]));
+        assert_eq!(
+            one(&["COMMAND", "GETKEYS", "EVAL", "return 1", "2", "k1", "k2", "a"]),
+            keys(&["k1", "k2"])
+        );
+        assert_eq!(
+            one(&["COMMAND", "GETKEYS", "EVAL", "return 1", "0"]),
+            keys(&[])
+        );
+        assert_eq!(
+            one(&["COMMAND", "GETKEYS", "SORT", "l", "STORE", "d"]),
+            keys(&["l", "d"])
+        );
+        assert_eq!(
+            one(&["COMMAND", "GETKEYS"]),
+            Frame::error("ERR wrong number of arguments for 'command|getkeys' command")
+        );
+        assert_eq!(
+            one(&["COMMAND", "GETKEYS", "nope", "a"]),
+            Frame::error("ERR Invalid command specified")
+        );
+        for wrong in [
+            &["COMMAND", "GETKEYS", "GET"][..],
+            &["COMMAND", "GETKEYS", "GET", "a", "b"],
+        ] {
+            assert_eq!(
+                one(wrong),
+                Frame::error("ERR Invalid number of arguments specified for command")
+            );
+        }
+        assert_eq!(
+            one(&["COMMAND", "GETKEYS", "PING"]),
+            Frame::error("ERR The command has no key arguments")
+        );
+    }
+
+    /// A command without keys in the table either has none or is one whose
+    /// keys are read from its arguments, and `has_movable_keys` knows which.
+    #[test]
+    fn every_command_with_keys_in_its_arguments_is_known() {
+        let args: Vec<bytes::Bytes> = ["name", "sub", "2", "k1", "k2", "STORE", "d", "x"]
+            .iter()
+            .map(|arg| bytes::Bytes::from_static(arg.as_bytes()))
+            .collect();
+        for spec in COMMANDS {
+            let found = crate::acl::command_keys(spec, &args);
+            if spec.first_key == 0 && !crate::acl::has_movable_keys(spec) {
+                assert!(
+                    found.is_empty(),
+                    "{} reads keys from its arguments",
+                    spec.name
+                );
+            }
+        }
+    }
 
     #[test]
     fn count_matches_table() {

@@ -47,6 +47,82 @@ jobs:
       - name: Test
         run: dotnet test clients/dotnet/StackExchangeRedis -p:StackExchangeRedisVersion=${{ matrix.version }} --logger "console;verbosity=normal"
 
+  clients-python:
+    name: Client tests (redis-py ${{ matrix.version }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ["8.1.0", "5.3.1"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: clients/python/redis-py/requirements.txt
+      - name: Build the server
+        run: cargo build --release -p rexyra-server
+      - name: Install
+        working-directory: clients/python/redis-py
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install "redis==${{ matrix.version }}"
+      - name: Test
+        working-directory: clients/python/redis-py
+        run: python -m pytest -ra
+
+  clients-java:
+    name: Client tests (${{ matrix.library }} ${{ matrix.version }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { library: Jedis, property: jedis.version, version: "8.0.2" }
+          - { library: Jedis, property: jedis.version, version: "7.5.3" }
+          - { library: Lettuce, property: lettuce.version, version: "7.9.0.RELEASE" }
+          - { library: Lettuce, property: lettuce.version, version: "6.9.0.RELEASE" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+          cache-dependency-path: clients/java/pom.xml
+      - name: Build the server
+        run: cargo build --release -p rexyra-server
+      - name: Test
+        working-directory: clients/java
+        run: mvn -B clean test "-Dtest=${{ matrix.library }}*" "-D${{ matrix.property }}=${{ matrix.version }}"
+
+  clients-go:
+    name: Client tests (go-redis ${{ matrix.version }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ["v9.23.0", "v9.7.3"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: clients/go/go-redis/go.mod
+          cache-dependency-path: clients/go/go-redis/go.sum
+      - name: Build the server
+        run: cargo build --release -p rexyra-server
+      - name: Test
+        shell: pwsh
+        working-directory: clients/go/go-redis
+        run: ./test-version.ps1 ${{ matrix.version }} -v
+
   fuzz:
     # The protocol crate has no platform-specific code, and libFuzzer is best
     # supported on Linux, so the fuzz smoke test runs there.

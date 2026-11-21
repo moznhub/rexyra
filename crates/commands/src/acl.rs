@@ -52,8 +52,9 @@ const CATEGORIES: [&str; 21] = [
 ];
 
 /// Commands Redis puts in `@dangerous` besides the administrative ones.
-const DANGEROUS: [&str; 9] = [
+const DANGEROUS: [&str; 10] = [
     "flushall", "flushdb", "keys", "info", "sort", "sort_ro", "restore", "lastsave", "shutdown",
+    "swapdb",
 ];
 
 type Subcommands = &'static [(&'static str, &'static [&'static str])];
@@ -234,7 +235,7 @@ fn in_category(spec: &CommandSpec, sub: Option<&str>, category: &str) -> bool {
         "dangerous" => flag("admin") || DANGEROUS.contains(&spec.name),
         "keyspace" => {
             (spec.group == "generic" && !sort)
-                || matches!(spec.name, "flushall" | "flushdb" | "dbsize")
+                || matches!(spec.name, "flushall" | "flushdb" | "dbsize" | "swapdb")
         }
         // SORT works on all three kinds of collection.
         "set" | "list" if sort => true,
@@ -723,6 +724,36 @@ impl User {
         line.push_str(&self.describe_commands());
         line
     }
+}
+
+/// Whether a command's keys depend on its other arguments, so that
+/// [`command_keys`] reads them rather than the command table.
+pub(crate) fn has_movable_keys(spec: &CommandSpec) -> bool {
+    matches!(
+        spec.name,
+        "eval"
+            | "evalsha"
+            | "eval_ro"
+            | "evalsha_ro"
+            | "fcall"
+            | "fcall_ro"
+            | "blmpop"
+            | "bzmpop"
+            | "zunion"
+            | "zinter"
+            | "zdiff"
+            | "sintercard"
+            | "zintercard"
+            | "lmpop"
+            | "zmpop"
+            | "zunionstore"
+            | "zinterstore"
+            | "zdiffstore"
+            | "sort"
+            | "sort_ro"
+            | "object"
+            | "memory"
+    )
 }
 
 /// The keys a command names. Most follow from the command table; commands

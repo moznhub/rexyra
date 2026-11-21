@@ -62,9 +62,11 @@ Today a connection only ever receives the reply to something it sent: it hands a
 
 | | Item | Done when |
 |---|---|---|
-| L | **Client library smoke tests.** StackExchange.Redis is done: [clients](../clients/README.md), versions 2.12 and 3.4 in CI, subscriptions included. Then redis-py, node-redis, Jedis, go-redis and redis-rs. Each connects the way its documentation shows, runs the basics of every data type, a transaction, a script, and a subscription. | Each library has a test that runs in CI, and whatever it turned up is fixed or listed in COMPATIBILITY.md. |
+| L | **Client library smoke tests.** Done for StackExchange.Redis, redis-py, Jedis, Lettuce and go-redis, two versions of each in CI: [clients](../clients/README.md). Still to do: node-redis and redis-rs. Each connects the way its documentation shows, runs the basics of every data type, a transaction, a script, and a subscription. | Each library has a test that runs in CI, and whatever it turned up is fixed or listed in COMPATIBILITY.md. |
 | M | **Keyspace notifications.** `notify-keyspace-events` and the events for every command that changes a key, for expiry and for eviction. | The events for each command match Redis's table, compared with the multi-connection harness. With the setting off, which is the default, the cost is not measurable. |
-| S | **Commands the libraries ask for** on connecting or in common use and Rexyra lacks, as the smoke tests reveal them. `CLIENT TRACKING`, `CLIENT REPLY` and `WAIT` are the likely ones. | |
+| S | **Commands the libraries ask for** on connecting or in common use and Rexyra lacks, as the smoke tests reveal them. `MOVE`, `SWAPDB` and `COMMAND GETKEYS` are done; `COMMAND GETKEYSANDFLAGS` remains. | |
+| L | **Client-side caching** (`CLIENT TRACKING`), which go-redis and redis-py use when asked to cache. It needs the server to remember which keys each client has read and to push an invalidation when one changes. | go-redis and redis-py with caching on get cache hits and see changes made by other clients. |
+| M | **Expiry of single hash fields** (`HEXPIRE` and its family, Redis 7.4), tested by redis-py, Jedis, Lettuce and go-redis. | The commands match Redis; fields expire in snapshots and the append-only file as keys do; Redis 7.4 snapshots with field expiry load. |
 
 ## 0.5.0: settings that survive, and a server you can leave alone
 
@@ -86,7 +88,7 @@ Not scheduled. Roughly in order of likely demand.
 
 - **TLS.** An optional encrypted listener. Until then, Rexyra belongs on networks you trust.
 - **Check and repair tools** for snapshot and append-only files.
-- **More commands:** `SWAPDB`, `CLIENT PAUSE`, `LATENCY`, `DEBUG`, `MONITOR`, the `HELP` subcommands; HyperLogLog (`PFADD` ...); geospatial commands (`GEOADD` ...); streams (`XADD` ...).
+- **More commands:** `CLIENT PAUSE`, `LATENCY`, `DEBUG`, `MONITOR`, the `HELP` subcommands; HyperLogLog (`PFADD` ...); geospatial commands (`GEOADD` ...); streams (`XADD` ...).
 - **Fewer I/O worker threads.** The network runtime starts one worker per logical processor. Under Pub/Sub fan-out, four workers delivered as much as 24 with under half the processor time ([benchmarks/pubsub](benchmarks/pubsub)). A smaller default, measured on ordinary traffic as well, and a setting like Redis's `io-threads`.
 - **An ARM64 build.**
 
