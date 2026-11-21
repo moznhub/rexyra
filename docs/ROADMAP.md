@@ -72,8 +72,7 @@ Things found while building the service and the installer, and the items that we
 
 | | Item | Done when |
 |---|---|---|
-| M | **`CONFIG REWRITE`**, so that settings changed with `CONFIG SET` survive a restart. | The file is rewritten in place, keeping comments and order, as Redis does. |
-| M | **ACL persistence and audit.** `aclfile`, `ACL SAVE` / `ACL LOAD`, `ACL LOG`. Users created with `ACL SETUSER` are lost at a restart today. | |
+| M | **ACL persistence and audit.** `aclfile`, `ACL SAVE` / `ACL LOAD`, `ACL LOG`. Users created with `ACL SETUSER` survive a restart only through `CONFIG REWRITE` today. | |
 | S | **Warn about a data folder that does not exist.** A path in double quotes with backslashes is silently mangled, as in `redis.conf`, and the server starts anyway and fails at its first save. | The server refuses to start, naming the folder, when `dir` is not there. |
 | S | **`CONFIG GET` for the new settings** (`logfile`), and the service's state in `INFO`. | |
 | M | **Signed releases.** The executable and the installer are unsigned, so Windows SmartScreen warns and antivirus products sometimes object. | Both are signed in the release workflow. This needs a code-signing certificate, which costs money and is the maintainers' decision. |

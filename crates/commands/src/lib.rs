@@ -21,6 +21,7 @@ pub mod memory;
 mod object;
 pub mod persistence;
 pub mod pubsub;
+pub mod rewrite;
 mod scripting;
 mod server;
 mod sets;

@@ -72,7 +72,7 @@ rexyra-server.exe rexyra.conf --port 7000
 | `--maxmemory`, `--maxmemory-policy` | Memory limit and what to evict at the limit | none, `noeviction` |
 | `--databases`, `--maxclients` | Number of databases and of simultaneous clients | `16`, `10000` |
 
-Run `rexyra-server.exe --help` for the full list. Many settings can also be changed while the server runs with `CONFIG SET`. Directives in a configuration file that Rexyra does not support are skipped with a warning, so an existing `redis.conf` is a reasonable starting point.
+Run `rexyra-server.exe --help` for the full list. Many settings can also be changed while the server runs with `CONFIG SET`, and `CONFIG REWRITE` saves them, with any users made with `ACL SETUSER`, to the configuration file for the next start. Directives in a configuration file that Rexyra does not support are skipped with a warning, so an existing `redis.conf` is a reasonable starting point.
 
 ## Running as a Windows service
 

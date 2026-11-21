@@ -18,7 +18,7 @@ What ends up where:
 | | |
 |---|---|
 | `C:\Program Files\Rexyra\` | The program and its documentation. |
-| `C:\ProgramData\Rexyra\rexyra.conf` | The settings. Edit this file and restart the service to change them. |
+| `C:\ProgramData\Rexyra\rexyra.conf` | The settings. Edit this file and restart the service to change them, or change them with `CONFIG SET` and save them here with `CONFIG REWRITE`. |
 | `C:\ProgramData\Rexyra\data\` | The snapshot and, if turned on, the append-only file. |
 | `C:\ProgramData\Rexyra\logs\rexyra.log` | The log. When it reaches 100 MB it is renamed `rexyra.1.log` and a new one started; five earlier files are kept, the oldest deleted. `logfile-max-size` and `logfile-max-files` in `rexyra.conf` change that. |
 

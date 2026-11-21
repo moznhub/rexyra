@@ -596,10 +596,13 @@ pub(crate) fn config(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
         if !rest.is_empty() {
             return wrong_subcommand_arity("config", sub);
         }
-        Frame::error(match ctx.server.config_file {
-            None => "ERR The server is running without a config file",
-            Some(_) => "ERR Rewriting the config file is not supported yet",
-        })
+        if ctx.server.config_file.is_none() {
+            return Frame::error("ERR The server is running without a config file");
+        }
+        match crate::rewrite::rewrite(ctx.server, |name| parameter_value(ctx, name)) {
+            Ok(()) => Frame::ok(),
+            Err(e) => Frame::error(format!("ERR Rewriting config file: {e}")),
+        }
     } else {
         unknown_subcommand("CONFIG", sub)
     }

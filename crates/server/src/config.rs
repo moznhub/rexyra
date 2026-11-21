@@ -542,31 +542,10 @@ impl Config {
     }
 }
 
-/// One value as a configuration file takes it: bare where that is safe,
-/// otherwise in single quotes, which are literal, or in double quotes with
-/// escapes when the value itself holds a single quote.
+/// One value as a configuration file takes it, written the same way
+/// `CONFIG REWRITE` writes it.
 fn quoted(value: &str) -> String {
-    let bare = !value.is_empty()
-        && !value.starts_with('#')
-        && !value.contains(|c: char| c.is_whitespace() || c == '"' || c == '\'');
-    if bare {
-        value.to_owned()
-    } else if !value.contains('\'') {
-        format!("'{value}'")
-    } else {
-        let mut out = String::from("\"");
-        for c in value.chars() {
-            match c {
-                '\\' | '"' => out.extend(['\\', c]),
-                '\n' => out.push_str("\\n"),
-                '\r' => out.push_str("\\r"),
-                '\t' => out.push_str("\\t"),
-                c => out.push(c),
-            }
-        }
-        out.push('"');
-        out
-    }
+    rexyra_commands::rewrite::quote(value)
 }
 
 #[cfg(test)]
