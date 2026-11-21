@@ -34,6 +34,23 @@ pub fn allocated_bytes() -> u64 {
     ALLOCATOR.allocated() as u64
 }
 
+/// Checks that `dir`, where the snapshot and the append-only file go, is an
+/// existing folder. Redis refuses to start without it, and so does Rexyra:
+/// starting anyway would mean that every save fails, unnoticed until the
+/// data is needed.
+pub fn check_data_folder(dir: &str) -> Result<(), String> {
+    match std::fs::metadata(dir) {
+        Ok(found) if found.is_dir() => Ok(()),
+        Ok(_) => Err(format!(
+            "the data folder '{dir}' (dir) is a file, not a folder"
+        )),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Err(format!(
+            "the data folder '{dir}' (dir) does not exist; create it, or correct dir"
+        )),
+        Err(e) => Err(format!("the data folder '{dir}' (dir) cannot be used: {e}")),
+    }
+}
+
 /// Accepts connections on `listener` until `shutdown` completes.
 pub async fn serve(
     listener: TcpListener,

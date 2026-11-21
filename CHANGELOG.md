@@ -14,6 +14,7 @@ All notable changes to Rexyra are recorded here. The format follows [Keep a Chan
 
 ### Changed
 
+- **The server does not start if its data folder (`dir`) does not exist**, or is a file, and says which folder in the log, on standard error and, for the service, in `rexyra-startup-error.txt`. Redis does the same. Before, it started anyway and every save failed. A Windows path in double quotes, where backslashes start escapes, was the usual way to get there.
 - Replies to the commands before a blocking command in the same pipeline are sent while it waits, as Redis does, instead of after it.
 - **Licence.** Rexyra is licensed under the Apache License, Version 2.0, instead of The Unlicense. Version 0.2.0 was released into the public domain and stays that way; later versions are under Apache-2.0.
 
