@@ -10,6 +10,7 @@ use bytes::{Bytes, BytesMut};
 use rexyra_resp::parse_request;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::sync::oneshot;
 
 use crate::executor::{ClientChannels, Executor, Out};
 
@@ -20,10 +21,24 @@ const READ_BUFFER: usize = 16 * 1024;
 const MAX_BUFFERED_WHILE_WAITING: usize = 1024 * 1024;
 
 /// Writes `data` and lowers the count of bytes queued for the client.
-async fn write(stream: &mut TcpStream, queued: &AtomicUsize, data: Bytes) -> io::Result<()> {
-    stream.write_all(&data).await?;
-    queued.fetch_sub(data.len(), Ordering::Relaxed);
-    Ok(())
+/// Returns `false`, abandoning the write, if the client is killed first: a
+/// client that does not read would otherwise keep this task waiting here
+/// for ever, which is exactly when it gets killed for its output limit.
+async fn write(
+    stream: &mut TcpStream,
+    queued: &AtomicUsize,
+    data: Bytes,
+    killed: &mut oneshot::Receiver<()>,
+) -> io::Result<bool> {
+    tokio::select! {
+        biased;
+        _ = killed => Ok(false),
+        written = stream.write_all(&data) => {
+            written?;
+            queued.fetch_sub(data.len(), Ordering::Relaxed);
+            Ok(true)
+        }
+    }
 }
 
 /// Serves `stream` until the client disconnects, sends `QUIT`, violates the
@@ -94,9 +109,15 @@ pub(crate) async fn serve(
             message = out.recv() => match message {
                 // Cannot happen while `reply_to` is held here.
                 None => return Ok(()),
-                Some(Out::Data(data)) => write(&mut stream, &queued, data).await?,
+                Some(Out::Data(data)) => {
+                    if !write(&mut stream, &queued, data, &mut killed).await? {
+                        return Ok(());
+                    }
+                }
                 Some(Out::Done { data, close }) => {
-                    write(&mut stream, &queued, data).await?;
+                    if !write(&mut stream, &queued, data, &mut killed).await? {
+                        return Ok(());
+                    }
                     in_flight = false;
                     if close {
                         return stream.shutdown().await;

@@ -20,6 +20,7 @@ mod lualibs;
 pub mod memory;
 mod object;
 pub mod persistence;
+pub mod pubsub;
 mod scripting;
 mod server;
 mod sets;
@@ -32,7 +33,8 @@ mod transactions;
 mod zsets;
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::atomic::AtomicUsize;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use bytes::Bytes;
@@ -84,6 +86,12 @@ pub struct ClientState {
     /// or may not be allowed to do anything; see [`acl`].
     pub user: String,
     pub authenticated: bool,
+    /// Channels, patterns and shard channels the client is subscribed to.
+    pub subscriptions: pubsub::Subscriptions,
+    /// Bytes of output handed to the connection and not yet written to
+    /// its socket. Shared with the connection task, which lowers it as it
+    /// writes; `CLIENT LIST` shows it as `omem`.
+    pub output_queued: Arc<AtomicUsize>,
 }
 
 impl ClientState {
@@ -108,6 +116,8 @@ impl ClientState {
             watches: Vec::new(),
             user: acl::DEFAULT_USER.to_owned(),
             authenticated: false,
+            subscriptions: pubsub::Subscriptions::default(),
+            output_queued: Arc::default(),
         }
     }
 }
@@ -262,6 +272,17 @@ pub fn dispatch(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
             transaction.abort();
         }
         let error = Frame::error(memory::ERR_OOM);
+        ctx.server.record_rejected(Some(spec), &error);
+        return error;
+    }
+    // A RESP2 connection that has subscribed can only receive messages, and
+    // say little more than that it no longer wants them. RESP3 has room for
+    // both, so there every command stays available.
+    if ctx.client.proto == Protocol::Resp2
+        && ctx.client.subscriptions.any()
+        && !pubsub::allowed_while_subscribed(spec.name)
+    {
+        let error = pubsub::subscribed_mode_error(spec.name);
         ctx.server.record_rejected(Some(spec), &error);
         return error;
     }

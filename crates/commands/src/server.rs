@@ -124,6 +124,12 @@ pub struct Server {
     pub save_points: Vec<(u64, u64)>,
     /// Requests for the execution loop; see [`Effect`].
     pub effects: Vec<Effect>,
+    /// Every Pub/Sub subscription; see [`crate::pubsub`].
+    pub pubsub: crate::pubsub::PubSub,
+    /// Messages for clients, as `(client id, message)`, which the execution
+    /// loop appends to each client's output after the reply of the command
+    /// that produced them.
+    pub pushes: Vec<(u64, Frame)>,
     /// The Lua interpreter and script cache, started by the first script.
     pub scripting: Option<Box<Scripting>>,
     /// How the script engine reaches waiting clients; see [`BusyPoll`].
@@ -182,6 +188,8 @@ impl Default for Server {
             last_bgsave_try: 0,
             save_points: vec![(3600, 1), (300, 100), (60, 10_000)],
             effects: Vec::new(),
+            pubsub: crate::pubsub::PubSub::default(),
+            pushes: Vec::new(),
             scripting: None,
             busy_poll: None,
             logs: Vec::new(),

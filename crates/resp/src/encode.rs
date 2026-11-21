@@ -74,6 +74,7 @@ pub fn encode(frame: &Frame, proto: Protocol, out: &mut BytesMut) {
             header(out, if resp3 { b'>' } else { b'*' }, items.len());
             encode_all(items, proto, out);
         }
+        Frame::Sequence(items) => encode_all(items, proto, out),
     }
 }
 

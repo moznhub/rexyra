@@ -51,8 +51,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::{Bytes, BytesMut};
 use rexyra_commands::{
-    aof, dispatch, persistence, unwatch_all, BlockKind, BlockRequest, BusyPoll, ClientState, Ctx,
-    Effect, Server,
+    aof, dispatch, persistence, pubsub, unwatch_all, BlockKind, BlockRequest, BusyPoll,
+    ClientState, Ctx, Effect, Server,
 };
 use rexyra_engine::{Keyspace, Value};
 use rexyra_resp::{encode, Frame};
@@ -358,7 +358,22 @@ struct ClientIo {
     buf: BytesMut,
     /// Handed to the connection and not yet written to the socket.
     queued: Arc<AtomicUsize>,
+    /// Listed in [`State::dirty`].
+    dirty: bool,
+    /// Since when (milliseconds) the output waiting for this client has
+    /// been over the soft limit, if it is.
+    over_soft_limit_since: Option<u64>,
 }
+
+/// Limits on the output waiting for a client that is subscribed to
+/// something, as Redis's `client-output-buffer-limit pubsub 32mb 8mb 60`:
+/// a subscriber that does not read its messages is disconnected when the
+/// output waiting for it passes the hard limit, or has stayed over the soft
+/// limit for that many seconds. Ordinary clients have no limit, as in
+/// Redis: they only ever wait for the replies to what they sent.
+const PUBSUB_HARD_LIMIT: usize = 32 * 1024 * 1024;
+const PUBSUB_SOFT_LIMIT: usize = 8 * 1024 * 1024;
+const PUBSUB_SOFT_SECONDS: u64 = 60;
 
 /// A client waiting inside a blocking command.
 struct Parked {
@@ -498,15 +513,18 @@ impl State {
                     out,
                     queued,
                 } => {
+                    let mut client = ClientState::new(id, addr);
+                    client.output_queued = Arc::clone(&queued);
                     self.io.insert(
                         id,
                         ClientIo {
                             tx: out,
                             buf: BytesMut::new(),
                             queued,
+                            dirty: false,
+                            over_soft_limit_since: None,
                         },
                     );
-                    let mut client = ClientState::new(id, addr);
                     rexyra_commands::acl::start_session(&self.server, &mut client);
                     client.laddr = laddr;
                     client.connected_at = now_ms();
@@ -521,6 +539,7 @@ impl State {
                     self.io.remove(&id);
                     if let Some(mut client) = self.clients.remove(&id) {
                         unwatch_all(&mut client, &mut self.keyspace);
+                        pubsub::forget(&mut self.server, &mut client);
                     }
                 }
                 Message::Hangup { id } => {
@@ -560,13 +579,94 @@ impl State {
                 let _ = io.tx.send(Out::Done { data, close });
             }
         }
+        let now = now_ms();
         for id in std::mem::take(&mut self.dirty) {
+            let Some(io) = self.io.get_mut(&id) else {
+                continue;
+            };
+            io.dirty = false;
+            if io.buf.is_empty() {
+                continue;
+            }
+            let data = io.buf.split().freeze();
+            let queued = io.queued.fetch_add(data.len(), Ordering::Relaxed) + data.len();
+            let _ = io.tx.send(Out::Data(data));
+            let subscriber = self
+                .clients
+                .get(&id)
+                .is_some_and(|client| client.subscriptions.any());
+            if subscriber {
+                self.check_output_limit(id, queued, now);
+            }
+        }
+    }
+
+    /// Disconnects a subscriber whose output is piling up because it does
+    /// not read it.
+    fn check_output_limit(&mut self, id: u64, queued: usize, now: u64) {
+        let Some(io) = self.io.get_mut(&id) else {
+            return;
+        };
+        let over = if queued > PUBSUB_HARD_LIMIT {
+            true
+        } else if queued > PUBSUB_SOFT_LIMIT {
+            let since = *io.over_soft_limit_since.get_or_insert(now);
+            now.saturating_sub(since) >= PUBSUB_SOFT_SECONDS * 1000
+        } else {
+            io.over_soft_limit_since = None;
+            false
+        };
+        if !over {
+            return;
+        }
+        let addr = self
+            .clients
+            .get(&id)
+            .map(|client| client.addr.clone())
+            .unwrap_or_default();
+        warn!(
+            client = id,
+            addr = %addr,
+            queued,
+            "closed a Pub/Sub client for overcoming its output buffer limit"
+        );
+        // It stops receiving at once; the connection closes, and its
+        // disconnect then removes the rest.
+        self.io.remove(&id);
+        if let Some(client) = self.clients.get_mut(&id) {
+            pubsub::forget(&mut self.server, client);
+        }
+        if let Some(kill) = self.kill_switches.remove(&id) {
+            let _ = kill.send(());
+        }
+    }
+
+    /// Lists client `id` for sending at the next commit.
+    fn mark_dirty(&mut self, id: u64) {
+        if let Some(io) = self.io.get_mut(&id) {
+            if !io.dirty {
+                io.dirty = true;
+                self.dirty.push(id);
+            }
+        }
+    }
+
+    /// Appends the messages the last command published to their
+    /// receivers' output: after everything already produced for them, and,
+    /// for the client that ran the command, after its reply (`out`).
+    fn deliver_pushes(&mut self, client: &ClientState, out: &mut BytesMut) {
+        for (id, frame) in std::mem::take(&mut self.server.pushes) {
+            if id == client.id {
+                encode(&frame, client.proto, out);
+                continue;
+            }
+            // A receiver that has gone is simply skipped.
+            let Some(proto) = self.clients.get(&id).map(|target| target.proto) else {
+                continue;
+            };
             if let Some(io) = self.io.get_mut(&id) {
-                if !io.buf.is_empty() {
-                    let data = io.buf.split().freeze();
-                    io.queued.fetch_add(data.len(), Ordering::Relaxed);
-                    let _ = io.tx.send(Out::Data(data));
-                }
+                encode(&frame, proto, &mut io.buf);
+                self.mark_dirty(id);
             }
         }
     }
@@ -592,7 +692,7 @@ impl State {
         }
         io.buf = buf;
         if !io.buf.is_empty() {
-            self.dirty.push(id);
+            self.mark_dirty(id);
         }
     }
 
@@ -749,6 +849,9 @@ impl State {
         // Encode with the protocol in effect *after* the command, so the
         // reply to `HELLO 3` is already RESP3.
         encode(&frame, client.proto, out);
+        if !self.server.pushes.is_empty() {
+            self.deliver_pushes(client, out);
+        }
         if client.close_after_reply {
             Step::Close
         } else {

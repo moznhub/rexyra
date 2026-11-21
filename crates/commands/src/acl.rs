@@ -65,6 +65,7 @@ const SCRIPT: &[&str] = &["slow", "scripting"];
 const SCRIPT_WRITE: &[&str] = &["write", "slow", "scripting"];
 const KEY_READ: &[&str] = &["keyspace", "read", "slow"];
 const SLOW: &[&str] = &["slow"];
+const PUBSUB_SLOW: &[&str] = &["pubsub", "slow"];
 
 /// Commands that are containers of subcommands, with the categories of
 /// each subcommand. Permissions apply to the subcommand.
@@ -140,6 +141,17 @@ const CONTAINERS: &[(&str, Subcommands)] = &[
     ),
     ("memory", &[("usage", &["read", "slow"]), ("help", SLOW)]),
     (
+        "pubsub",
+        &[
+            ("channels", PUBSUB_SLOW),
+            ("numpat", PUBSUB_SLOW),
+            ("numsub", PUBSUB_SLOW),
+            ("shardchannels", PUBSUB_SLOW),
+            ("shardnumsub", PUBSUB_SLOW),
+            ("help", SLOW),
+        ],
+    ),
+    (
         "object",
         &[
             ("encoding", KEY_READ),
@@ -199,7 +211,7 @@ fn in_category(spec: &CommandSpec, sub: Option<&str>, category: &str) -> bool {
         }
         "sortedset" => spec.group == "sorted-set",
         "transaction" => spec.group == "transactions",
-        "string" | "list" | "hash" | "set" | "bitmap" | "connection" | "scripting" => {
+        "string" | "list" | "hash" | "set" | "bitmap" | "connection" | "scripting" | "pubsub" => {
             spec.group == category
         }
         _ => false,
@@ -249,8 +261,8 @@ pub struct User {
     /// SHA-256 hashes of the passwords, as 64 hexadecimal digits.
     passwords: Vec<String>,
     keys: Vec<KeyPattern>,
-    /// Pub/Sub channel patterns. There is no Pub/Sub here; they are kept so
-    /// that rules written for Redis are accepted and shown back.
+    /// The Pub/Sub channels the user may publish and subscribe to, as glob
+    /// patterns (`&pattern`), unless it may use any (`allchannels`).
     all_channels: bool,
     channels: Vec<String>,
     rules: Vec<Rule>,
@@ -262,6 +274,7 @@ pub(crate) enum Denied {
     /// The command, as `name` or `name|subcommand`.
     Command(String),
     Key(Bytes),
+    Channel(Bytes),
 }
 
 impl User {
@@ -562,7 +575,43 @@ impl User {
                 }
             }
         }
+        if !self.all_channels {
+            let (names, patterns): (&[Bytes], bool) = match spec.name {
+                "publish" | "spublish" => (&args[1..2], false),
+                "subscribe" | "ssubscribe" => (&args[1..], false),
+                "psubscribe" => (&args[1..], true),
+                _ => (&[], false),
+            };
+            for name in names {
+                if !self.may_use_channel(name, patterns) {
+                    return Err(Denied::Channel(name.clone()));
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// Whether the user may publish or subscribe to `name`. A pattern
+    /// (`PSUBSCRIBE`) is only allowed if the user's rules contain exactly
+    /// that pattern, since it could match channels the user may not see.
+    fn may_use_channel(&self, name: &[u8], pattern: bool) -> bool {
+        self.all_channels
+            || self.channels.iter().any(|allowed| {
+                if pattern {
+                    allowed.as_bytes() == name
+                } else {
+                    glob_match(allowed.as_bytes(), name)
+                }
+            })
+    }
+
+    /// Whether a client with these subscriptions could still make them as
+    /// this user.
+    pub(crate) fn may_keep(&self, subs: &crate::pubsub::Subscriptions) -> bool {
+        self.all_channels
+            || (subs.channels.iter().all(|c| self.may_use_channel(c, false))
+                && subs.shard.iter().all(|c| self.may_use_channel(c, false))
+                && subs.patterns.iter().all(|p| self.may_use_channel(p, true)))
     }
 
     fn describe_keys(&self) -> String {
@@ -791,6 +840,13 @@ fn denied_text(user: &str, denied: &Denied, name_key: bool) -> String {
             )
         }
         Denied::Key(_) => "No permissions to access a key".to_owned(),
+        Denied::Channel(channel) if name_key => {
+            format!(
+                "User {user} has no permissions to access the '{}' channel",
+                lossy(channel)
+            )
+        }
+        Denied::Channel(_) => "No permissions to access a channel".to_owned(),
     }
 }
 
@@ -976,11 +1032,24 @@ fn acl_command(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Result<Frame, Frame> {
         let [name, rules @ ..] = rest else {
             return Err(arity());
         };
+        let name = lossy(name);
         ctx.server
             .acl
-            .set_user(&lossy(name), rules)
+            .set_user(&name, rules)
             .map_err(Frame::error)?;
         ctx.server.refresh_protection();
+        // A subscriber whose user may no longer use one of its channels is
+        // disconnected, as in Redis.
+        if let Some(user) = ctx.server.acl.user(&name) {
+            for client in ctx.clients.values() {
+                if client.user == name && !user.may_keep(&client.subscriptions) {
+                    ctx.server.effects.push(Effect::Kill(client.id));
+                }
+            }
+            if ctx.client.user == name && !user.may_keep(&ctx.client.subscriptions) {
+                ctx.client.close_after_reply = true;
+            }
+        }
         Ok(Frame::ok())
     } else if is(sub, "DELUSER") {
         if rest.is_empty() {

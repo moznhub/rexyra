@@ -5,7 +5,12 @@ use rexyra_resp::{parse_i64, Frame, Protocol};
 
 use crate::{clients, is, lossy, unknown_subcommand, wrong_subcommand_arity, Ctx, COMPAT_VERSION};
 
-pub(crate) fn ping(_ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
+pub(crate) fn ping(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
+    if args.len() <= 2 {
+        if let Some(reply) = crate::pubsub::subscribed_ping(ctx.client, args.get(1)) {
+            return reply;
+        }
+    }
     match args {
         [_] => Frame::simple("PONG"),
         [_, message] => Frame::Bulk(message.clone()),
