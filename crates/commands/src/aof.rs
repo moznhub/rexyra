@@ -1036,6 +1036,8 @@ mod tests {
             "ZUNIONSTORE zu 2 z z",
             "RENAME a renamed",
             "COPY b copied",
+            "MOVE copied 2",
+            "SWAPDB 2 4",
             "DEL b",
             "SETBIT bits 7 1",
             "SORT l2 ALPHA STORE sorted",

@@ -97,6 +97,8 @@ pub static COMMANDS: &[CommandSpec] = &[
     cmd("rename", 3, WRITE, (1, 2, 1), "generic", "1.0.0", "Renames a key and overwrites the destination.", keys::rename),
     cmd("renamenx", 3, WRITE_FAST, (1, 2, 1), "generic", "1.0.0", "Renames a key only when the target key name doesn't exist.", keys::renamenx),
     cmd("copy", -3, WRITE_OOM, (1, 2, 1), "generic", "6.2.0", "Copies the value of a key to a new key.", keys::copy),
+    cmd("move", 3, WRITE_FAST, KEY1, "generic", "1.0.0", "Moves a key to another database.", keys::move_key),
+    cmd("swapdb", 3, WRITE_FAST, NO_KEYS, "server", "4.0.0", "Swaps two Redis databases.", keys::swapdb),
     cmd("keys", 2, READ, NO_KEYS, "generic", "1.0.0", "Returns all key names that match a pattern.", keys::keys),
     cmd("scan", -2, READ, NO_KEYS, "generic", "2.8.0", "Iterates over the key names in the database.", keys::scan),
     cmd("randomkey", 1, READ, NO_KEYS, "generic", "1.0.0", "Returns a random key name from the database.", keys::randomkey),

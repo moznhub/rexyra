@@ -713,6 +713,34 @@ mod large_collections {
     }
 
     #[tokio::test]
+    async fn swapdb_during_a_save_waits_and_the_snapshot_keeps_the_databases_apart() {
+        let dir = TempDir::new("swapdb");
+        let addr = start(&dir).await;
+        let mut writer = Client::connect(addr).await;
+        let mut other = Client::connect(addr).await;
+        writer.build_hash("big").await;
+        assert_eq!(other.ask("SELECT 1").await, "+OK");
+        assert_eq!(other.ask("SET small one").await, "+OK");
+
+        assert_eq!(other.ask("BGSAVE").await, "+Background saving started");
+        assert_eq!(other.ask("SWAPDB 0 1").await, "+OK");
+        assert_eq!(other.ask("EXISTS small").await, ":0");
+        assert_eq!(other.ask("HLEN big").await, format!(":{FIELDS}"));
+        assert_eq!(writer.ask("GET small").await, "one");
+        other.wait_for_save().await;
+
+        // The snapshot has each database as it was when the save began.
+        assert_eq!(other.ask("SHUTDOWN NOSAVE").await, "+OK");
+        let addr = start(&dir).await;
+        let mut fresh = Client::connect(addr).await;
+        assert_eq!(fresh.ask("HLEN big").await, format!(":{FIELDS}"));
+        assert_eq!(fresh.ask("EXISTS small").await, ":0");
+        assert_eq!(fresh.ask("SELECT 1").await, "+OK");
+        assert_eq!(fresh.ask("GET small").await, "one");
+        assert_eq!(fresh.ask("EXISTS big").await, ":0");
+    }
+
+    #[tokio::test]
     async fn clients_held_back_are_let_go_when_the_save_is_abandoned() {
         let dir = TempDir::new("abandoned");
         let addr = start(&dir).await;

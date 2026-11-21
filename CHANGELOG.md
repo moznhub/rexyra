@@ -4,6 +4,11 @@ All notable changes to Rexyra are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added
+
+- `MOVE`, `SWAPDB` and `COMMAND GETKEYS`, which redis-py, Jedis and go-redis call. `SWAPDB` during a background save waits until the save has read the data, so the snapshot still has each database as it was.
+- Tests with the redis-py (8.1 and 5.3), Jedis (8.0 and 7.5), Lettuce (7.9 and 6.9) and go-redis (9.23 and 9.7) client libraries, run in CI: [clients/README.md](https://github.com/moznhub/rexyra/blob/main/clients/README.md).
+
 ## [0.3.0] - 2026-11-21
 
 Rexyra now has Pub/Sub, and settings changed while it runs can be saved with `CONFIG REWRITE`. It was tested with the StackExchange.Redis client library and for six hours under load with every reply checked ([docs/benchmarks/soak](https://github.com/moznhub/rexyra/blob/main/docs/benchmarks/soak/README.md)).

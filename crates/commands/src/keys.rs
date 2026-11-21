@@ -137,6 +137,68 @@ fn rename_generic(ctx: &mut Ctx<'_>, args: &[Bytes], only_if_absent: bool) -> Re
     Ok(true)
 }
 
+/// `MOVE key db`: moves the key, with its TTL, to another database, unless
+/// it is not there or the target already has that key.
+pub(crate) fn move_key(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
+    reply(move_impl(ctx, args))
+}
+
+fn move_impl(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Result<Frame, Frame> {
+    let key = &args[1];
+    let index = int(&args[2])?;
+    if index < 0 || index as u64 >= ctx.server.databases as u64 {
+        return Err(Frame::error(ERR_DB_RANGE));
+    }
+    let (src_db, dst_db) = (ctx.client.db, index as usize);
+    if src_db == dst_db {
+        return Err(Frame::error(
+            "ERR source and destination objects are the same",
+        ));
+    }
+    let now = ctx.now;
+    if !ctx.keyspace.db(src_db).exists(key, now) {
+        return Ok(Frame::Integer(0));
+    }
+    if ctx.keyspace.db(dst_db).exists(key, now) {
+        return Ok(Frame::Integer(0));
+    }
+    let Some((value, expire_at)) = ctx.keyspace.db(src_db).take(key, now) else {
+        return Ok(Frame::Integer(0));
+    };
+    ctx.keyspace
+        .db(dst_db)
+        .set(key, value, expire_at.map_or(SetTtl::Clear, SetTtl::At), now);
+    Ok(Frame::Integer(1))
+}
+
+/// `SWAPDB index1 index2`: exchanges the contents of two databases. Clients
+/// keep their database number and see the other contents.
+pub(crate) fn swapdb(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
+    let index = |arg: &Bytes, which: &str| match rexyra_resp::parse_i64(arg) {
+        Some(index) if index < 0 || index as u64 >= ctx.server.databases as u64 => {
+            Err(Frame::error(ERR_DB_RANGE))
+        }
+        Some(index) => Ok(index as usize),
+        None => Err(Frame::error(format!("ERR invalid {which} DB index"))),
+    };
+    let a = match index(&args[1], "first") {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    let b = match index(&args[2], "second") {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    // Outside a transaction or a script the command waited for this.
+    if crate::persistence::capturing(ctx.server) {
+        return Frame::error(
+            "ERR SWAPDB cannot run in a transaction or a script while a background save or rewrite is reading the data; try again when it has finished",
+        );
+    }
+    ctx.keyspace.swap(a, b);
+    Frame::ok()
+}
+
 /// `COPY source destination [DB destination-db] [REPLACE]`
 pub(crate) fn copy(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
     reply(copy_impl(ctx, args))
@@ -532,6 +594,60 @@ mod tests {
         assert_eq!(h.run("GET c"), bulk("1"));
         assert_eq!(h.run("RENAMENX c c"), int(0));
         assert_eq!(h.run("RENAMENX missing x"), err("ERR no such key"));
+    }
+
+    #[test]
+    fn move_key() {
+        let mut h = Harness::new();
+        h.run("SET a 1 EX 100");
+        assert_eq!(h.run("MOVE a 1"), int(1));
+        assert_eq!(h.run("EXISTS a"), int(0));
+        assert_eq!(h.run("MOVE a 1"), int(0), "no longer here");
+        h.run("SELECT 1");
+        assert_eq!(h.run("GET a"), bulk("1"));
+        assert_eq!(h.run("TTL a"), int(100), "the TTL moves with it");
+
+        h.run("SET b there");
+        h.run("SELECT 0");
+        h.run("SET b here");
+        assert_eq!(h.run("MOVE b 1"), int(0), "the target has the key");
+        assert_eq!(h.run("GET b"), bulk("here"));
+        assert_eq!(
+            h.run("MOVE b 0"),
+            err("ERR source and destination objects are the same")
+        );
+        assert_eq!(h.run("MOVE b 16"), err("ERR DB index is out of range"));
+        assert_eq!(h.run("MOVE b -1"), err("ERR DB index is out of range"));
+        assert_eq!(
+            h.run("MOVE b x"),
+            err("ERR value is not an integer or out of range")
+        );
+        assert_eq!(h.run("MOVE missing 1"), int(0));
+    }
+
+    #[test]
+    fn swapdb() {
+        let mut h = Harness::new();
+        h.run("SET a zero EX 100");
+        h.run("SELECT 3");
+        h.run("SET b three");
+        assert_eq!(h.run("SWAPDB 0 3"), Frame::ok());
+        assert_eq!(
+            h.run("GET b"),
+            Frame::Null,
+            "the client stays in database 3"
+        );
+        assert_eq!(h.run("GET a"), bulk("zero"));
+        assert_eq!(h.run("TTL a"), int(100));
+        h.run("SELECT 0");
+        assert_eq!(h.run("GET b"), bulk("three"));
+        assert_eq!(h.run("SWAPDB 0 0"), Frame::ok());
+        assert_eq!(h.run("GET b"), bulk("three"));
+        // Compared with Redis 7.4.
+        assert_eq!(h.run("SWAPDB x 1"), err("ERR invalid first DB index"));
+        assert_eq!(h.run("SWAPDB 1 x"), err("ERR invalid second DB index"));
+        assert_eq!(h.run("SWAPDB 0 16"), err("ERR DB index is out of range"));
+        assert_eq!(h.run("SWAPDB -1 0"), err("ERR DB index is out of range"));
     }
 
     #[test]
