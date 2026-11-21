@@ -61,7 +61,12 @@ fn info(spec: &CommandSpec) -> Frame {
         Frame::Integer(spec.first_key),
         Frame::Integer(spec.last_key),
         Frame::Integer(spec.key_step),
-        Frame::Set(vec![Frame::simple(format!("@{}", spec.group))]),
+        Frame::Set(
+            crate::acl::categories(spec)
+                .into_iter()
+                .map(|category| Frame::simple(format!("@{category}")))
+                .collect(),
+        ),
         Frame::Array(Vec::new()), // tips
         Frame::Array(Vec::new()), // key specifications
         Frame::Array(Vec::new()), // subcommands
@@ -116,6 +121,43 @@ mod tests {
         assert_eq!(fields[0], Frame::bulk("echo"));
         assert_eq!(fields[1], Frame::Integer(2));
         assert_eq!(entries[1], Frame::Null);
+    }
+
+    /// Every ACL category, as Redis 7.4 lists them, for a sample covering
+    /// each rule: the flags, the group, a container, and the exceptions.
+    #[test]
+    fn info_lists_every_acl_category() {
+        for (command, expected) in [
+            ("GET", "@read @string @fast"),
+            ("BLPOP", "@write @list @slow @blocking"),
+            ("DEL", "@keyspace @write @slow"),
+            ("FLUSHALL", "@keyspace @write @slow @dangerous"),
+            ("SORT", "@write @set @sortedset @list @slow @dangerous"),
+            ("LASTSAVE", "@admin @fast @dangerous"),
+            ("EVAL_RO", "@slow @scripting"),
+            ("PUBLISH", "@pubsub @fast"),
+            ("MULTI", "@fast @transaction"),
+            ("CONFIG", "@slow"),
+            ("COMMAND", "@slow @connection"),
+        ] {
+            let Frame::Array(entries) = one(&["COMMAND", "INFO", command]) else {
+                panic!("expected array");
+            };
+            let Frame::Array(fields) = &entries[0] else {
+                panic!("expected array");
+            };
+            let Frame::Set(categories) = &fields[6] else {
+                panic!("expected set");
+            };
+            let names: Vec<String> = categories
+                .iter()
+                .map(|frame| match frame {
+                    Frame::Simple(name) => name.clone(),
+                    other => panic!("{other:?}"),
+                })
+                .collect();
+            assert_eq!(names.join(" "), expected, "{command}");
+        }
     }
 
     #[test]
