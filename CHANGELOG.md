@@ -4,6 +4,10 @@ All notable changes to Rexyra are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-21
+
+Rexyra now has Pub/Sub, and settings changed while it runs can be saved with `CONFIG REWRITE`. It was tested with the StackExchange.Redis client library and for six hours under load with every reply checked ([docs/benchmarks/soak](https://github.com/moznhub/rexyra/blob/main/docs/benchmarks/soak/README.md)).
+
 ### Added
 
 - **Pub/Sub**: `SUBSCRIBE`, `PSUBSCRIBE`, `SSUBSCRIBE`, `UNSUBSCRIBE`, `PUNSUBSCRIBE`, `SUNSUBSCRIBE`, `PUBLISH`, `SPUBLISH` and `PUBSUB`, in RESP2 and RESP3, with channel permissions for ACL users and Redis's default output limit for subscribers that do not read. `CLIENT LIST` shows subscriptions and output waiting to be written, and `INFO` counts channels and patterns.
@@ -65,6 +69,7 @@ The first public release: a Redis-compatible in-memory data server for Windows, 
 - Users created with `ACL SETUSER` are not saved across restarts; put them in the configuration file.
 - Everything known to differ from Redis is listed in [docs/COMPATIBILITY.md](https://github.com/moznhub/rexyra/blob/main/docs/COMPATIBILITY.md), and what is not done in [docs/ROADMAP.md](https://github.com/moznhub/rexyra/blob/main/docs/ROADMAP.md).
 
-[Unreleased]: https://github.com/moznhub/rexyra/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/moznhub/rexyra/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/moznhub/rexyra/releases/tag/v0.3.0
 [0.2.0]: https://github.com/moznhub/rexyra/releases/tag/v0.2.0
 [0.1.0]: https://github.com/moznhub/rexyra/releases/tag/v0.1.0
