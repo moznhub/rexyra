@@ -6,10 +6,12 @@ All notable changes to Rexyra are recorded here. The format follows [Keep a Chan
 
 ### Added
 
+- **Pub/Sub**: `SUBSCRIBE`, `PSUBSCRIBE`, `SSUBSCRIBE`, `UNSUBSCRIBE`, `PUNSUBSCRIBE`, `SUNSUBSCRIBE`, `PUBLISH`, `SPUBLISH` and `PUBSUB`, in RESP2 and RESP3, with channel permissions for ACL users and Redis's default output limit for subscribers that do not read. `CLIENT LIST` shows subscriptions and output waiting to be written, and `INFO` counts channels and patterns.
 - Tests with the StackExchange.Redis client library (versions 2.12 and 3.4), run in CI: [clients/README.md](https://github.com/moznhub/rexyra/blob/main/clients/README.md).
 
 ### Changed
 
+- Replies to the commands before a blocking command in the same pipeline are sent while it waits, as Redis does, instead of after it.
 - **Licence.** Rexyra is licensed under the Apache License, Version 2.0, instead of The Unlicense. Version 0.2.0 was released into the public domain and stays that way; later versions are under Apache-2.0.
 
 ## [0.2.0] - 2026-11-21

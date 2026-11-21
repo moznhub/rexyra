@@ -5,11 +5,11 @@
 
 A Redis-compatible in-memory data server for Windows, written in Rust.
 
-Rexyra speaks the Redis protocol (RESP2 and RESP3) and implements 180 Redis commands, so existing Redis tools and client libraries can talk to it. It runs as a single native Windows executable: no WSL, no Docker, no runtime to install.
+Rexyra speaks the Redis protocol (RESP2 and RESP3) and implements 189 Redis commands, so existing Redis tools and client libraries can talk to it. It runs as a single native Windows executable: no WSL, no Docker, no runtime to install.
 
 ## Highlights
 
-- **Redis-compatible.** Strings, hashes, lists, sets, sorted sets, bitmaps, expiry, transactions, blocking commands, Lua scripting and functions. Replies and error messages are checked against Redis 7.4.
+- **Redis-compatible.** Strings, hashes, lists, sets, sorted sets, bitmaps, expiry, transactions, blocking commands, Pub/Sub, Lua scripting and functions. Replies and error messages are checked against Redis 7.4.
 - **Durable, and interchangeable with Redis.** RDB snapshots and an append-only file in Redis's own formats: Redis loads Rexyra's files and Rexyra loads Redis's.
 - **Background saves without `fork`.** A point-in-time snapshot is written while commands keep running. Measured under load, throughput during a save is within a few percent of normal.
 - **Memory limit and eviction.** `maxmemory` with the eight Redis eviction policies, measured against what the process has actually allocated.
@@ -20,7 +20,7 @@ Rexyra speaks the Redis protocol (RESP2 and RESP3) and implements 180 Redis comm
 
 Pre-release. Rexyra passes its own test suite of about 480 tests and has been exercised with `redis-cli` and `redis-benchmark`; it has not been used in production. Of the client libraries, StackExchange.Redis is tested in CI (see [clients](clients/README.md)); the others have not been tested systematically yet.
 
-It is a **single-instance** server: replication, cluster mode, Pub/Sub, streams, modules and TLS are not implemented. See [what differs from Redis](docs/COMPATIBILITY.md) and the [roadmap](docs/ROADMAP.md).
+It is a **single-instance** server: replication, cluster mode, streams, modules and TLS are not implemented. See [what differs from Redis](docs/COMPATIBILITY.md) and the [roadmap](docs/ROADMAP.md).
 
 ## Quick start
 
@@ -98,6 +98,7 @@ msiexec /i rexyra-vX.Y.Z-windows-x86_64.msi /qn PORT=6380 INSTALLFOLDER="D:\Rexy
 |-------|----------|
 | Connection | `PING` `ECHO` `HELLO` `AUTH` `SELECT` `QUIT` `RESET` `CLIENT` (`ID`, `GETNAME`, `SETNAME`, `SETINFO`, `LIST`, `INFO`, `KILL`, `UNBLOCK`, `NO-EVICT`, `NO-TOUCH`) |
 | Server | `COMMAND` (`COUNT`, `LIST`, `INFO`, `DOCS`) `DBSIZE` `FLUSHDB` `FLUSHALL` `INFO` `CONFIG` (`GET`, `SET`, `RESETSTAT`) `SLOWLOG` (`GET`, `LEN`, `RESET`) `MEMORY` (`USAGE`) `ACL` (`SETUSER`, `GETUSER`, `DELUSER`, `LIST`, `USERS`, `WHOAMI`, `CAT`, `GENPASS`, `DRYRUN`) `TIME` `SAVE` `LASTSAVE` `SHUTDOWN` `BGSAVE` `BGREWRITEAOF` |
+| Pub/Sub | `SUBSCRIBE` `UNSUBSCRIBE` `PSUBSCRIBE` `PUNSUBSCRIBE` `SSUBSCRIBE` `SUNSUBSCRIBE` `PUBLISH` `SPUBLISH` `PUBSUB` (`CHANNELS`, `NUMSUB`, `NUMPAT`, `SHARDCHANNELS`, `SHARDNUMSUB`, `HELP`) |
 | Transactions | `MULTI` `EXEC` `DISCARD` `WATCH` `UNWATCH` |
 | Scripting | `EVAL` `EVALSHA` `EVAL_RO` `EVALSHA_RO` `SCRIPT` (`LOAD`, `EXISTS`, `FLUSH`, `KILL`) `FCALL` `FCALL_RO` `FUNCTION` (`LOAD`, `DELETE`, `FLUSH`, `LIST`, `STATS`, `KILL`, `DUMP`, `RESTORE`) |
 | Keys | `DEL` `UNLINK` `EXISTS` `TOUCH` `TYPE` `RENAME` `RENAMENX` `COPY` `KEYS` `SCAN` `RANDOMKEY` `SORT` `SORT_RO` `DUMP` `RESTORE` `OBJECT` (`ENCODING`, `REFCOUNT`, `IDLETIME`, `FREQ`) |
@@ -113,7 +114,7 @@ msiexec /i rexyra-vX.Y.Z-windows-x86_64.msi /qn PORT=6380 INSTALLFOLDER="D:\Rexy
 
 For the commands above, Rexyra is meant to be indistinguishable from Redis 7.x to a client. Where it is not, the difference is listed in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md), together with the details of persistence, the memory limit and access control. A few to know about up front:
 
-- No replication, cluster mode, Pub/Sub, streams or TLS.
+- No replication, cluster mode, streams or TLS.
 - Users created with `ACL SETUSER` are not saved; put the ones that must survive a restart in the configuration file.
 - `SCAN` cursors are valid but not numerically the same as Redis's.
 - Snapshots and append-only files written by Redis older than 7.0, or containing streams or module data, are refused with a message saying why.

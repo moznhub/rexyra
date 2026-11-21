@@ -804,7 +804,9 @@ fn frame_to_lua(lua: &Lua, frame: &Frame, resp3: bool) -> mlua::Result<Value> {
         Frame::Error(text) => single("err", string(text.as_bytes())?),
         Frame::Null | Frame::NullArray if resp3 => Ok(Value::Nil),
         Frame::Null | Frame::NullArray => Ok(Value::Boolean(false)),
-        Frame::Array(items) | Frame::Push(items) => array(&mut items.iter()),
+        Frame::Array(items) | Frame::Push(items) | Frame::Sequence(items) => {
+            array(&mut items.iter())
+        }
         Frame::Double(number) if resp3 => single("double", Value::Number(*number)),
         Frame::Double(number) => string(format_double(*number).as_bytes()),
         Frame::Boolean(flag) if resp3 => Ok(Value::Boolean(*flag)),

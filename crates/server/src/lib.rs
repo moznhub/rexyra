@@ -203,8 +203,8 @@ pub async fn serve_with(
                 .local_addr()
                 .map(|local| local.to_string())
                 .unwrap_or_default();
-            let killed = executor.connect(id, addr.to_string(), laddr);
-            if let Err(e) = connection::serve(stream, id, &executor, killed).await {
+            let channels = executor.connect(id, addr.to_string(), laddr);
+            if let Err(e) = connection::serve(stream, id, &executor, channels).await {
                 debug!(client = id, error = %e, "connection ended with error");
             }
             executor.disconnect(id);

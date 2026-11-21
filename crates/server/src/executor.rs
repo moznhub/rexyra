@@ -8,6 +8,16 @@
 //! * a pipeline costs one channel round-trip, not one per command,
 //! * replies for a connection are produced in request order by construction.
 //!
+//! # Output
+//!
+//! Everything the thread sends a client, the replies to its commands and
+//! messages pushed to it (Pub/Sub), is appended to one buffer per client in
+//! the order it is produced, and leaves through one channel per client. So
+//! a pushed message can never land in the middle of a reply, or overtake a
+//! reply that was produced before it. Output is held until the append-only
+//! file has been written ([`State::commit`]), then sent; the connection task
+//! writes it to the socket in the order received.
+//!
 //! # Blocking commands
 //!
 //! A command such as `BLPOP` that finds nothing to return does not hold up
@@ -34,14 +44,15 @@
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::io;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::{Bytes, BytesMut};
 use rexyra_commands::{
-    aof, dispatch, persistence, unwatch_all, BlockKind, BlockRequest, BusyPoll, ClientState, Ctx,
-    Effect, Server,
+    aof, dispatch, persistence, pubsub, unwatch_all, BlockKind, BlockRequest, BusyPoll,
+    ClientState, Ctx, Effect, Server,
 };
 use rexyra_engine::{Keyspace, Value};
 use rexyra_resp::{encode, Frame};
@@ -80,6 +91,8 @@ enum Message {
         addr: String,
         laddr: String,
         kill: oneshot::Sender<()>,
+        out: mpsc::UnboundedSender<Out>,
+        queued: Arc<AtomicUsize>,
     },
     Disconnect {
         id: u64,
@@ -95,7 +108,9 @@ enum Message {
     Batch {
         id: u64,
         commands: Vec<Vec<Bytes>>,
-        reply: oneshot::Sender<BatchReply>,
+        /// The client's output channel, for answering `BUSY` while a script
+        /// runs ([`Mailbox::poll`]), which happens away from [`State`].
+        out: mpsc::UnboundedSender<Out>,
     },
 }
 
@@ -146,22 +161,19 @@ impl BusyPoll for Mailbox {
         let mut kill = false;
         let mut rx = lock(&self.rx);
         while let Ok(message) = rx.try_recv() {
-            let Message::Batch {
-                commands, reply, ..
-            } = message
-            else {
+            let Message::Batch { commands, out, .. } = message else {
                 // Connections coming and going, timers: after the script.
                 lock(&self.backlog).push_back(message);
                 continue;
             };
-            let mut out = BytesMut::new();
+            let mut reply = BytesMut::new();
             for args in &commands {
                 let script_kill = matches!(
                     &args[..],
                     [command, sub]
                         if (command.eq_ignore_ascii_case(b"script") || command.eq_ignore_ascii_case(b"function")) && sub.eq_ignore_ascii_case(b"kill")
                 );
-                out.extend_from_slice(match (script_kill, killable) {
+                reply.extend_from_slice(match (script_kill, killable) {
                     (true, true) => {
                         kill = true;
                         b"+OK\r\n"
@@ -170,8 +182,12 @@ impl BusyPoll for Mailbox {
                     (false, _) => BUSY,
                 });
             }
-            let _ = reply.send(BatchReply {
-                data: out.freeze(),
+            // Output of this client produced before the script started may
+            // still be waiting for the next commit, so in the rare case of a
+            // client whose earlier output is held when it sends more, the
+            // `BUSY` can arrive first.
+            let _ = out.send(Out::Done {
+                data: reply.freeze(),
                 close: false,
             });
         }
@@ -179,17 +195,35 @@ impl BusyPoll for Mailbox {
     }
 }
 
-/// Encoded replies for one batch of commands.
-pub struct BatchReply {
-    pub data: Bytes,
-    /// The client asked to close (`QUIT`) or was told to (`CLIENT KILL` of
-    /// itself); flush `data`, then disconnect.
-    pub close: bool,
+/// What the execution thread sends a connection, in the order it is to be
+/// written.
+#[derive(Debug)]
+pub enum Out {
+    /// Output to write; the batch in flight is not finished yet (it is
+    /// blocked), or there is no batch in flight (pushed messages).
+    Data(Bytes),
+    /// The rest of the output of the batch in flight, which is finished:
+    /// the connection may read more commands. With `close` (`QUIT`, or
+    /// `CLIENT KILL` of itself), write `data` and disconnect.
+    Done { data: Bytes, close: bool },
+    /// The batch in flight was dropped, because the client hung up while
+    /// blocked: the connection is finished.
+    Abandon,
 }
 
-/// The execution thread has stopped, or it abandoned this client's batch
-/// because the client hung up while blocked or was killed. Either way the
-/// connection is finished.
+/// What a connection task keeps of its registration: the signal that it
+/// has been killed, where its output arrives, and the count of bytes queued
+/// for it and not yet written, which it lowers as it writes.
+pub struct ClientChannels {
+    pub killed: oneshot::Receiver<()>,
+    pub out: mpsc::UnboundedReceiver<Out>,
+    /// The sending end of `out`, which each batch carries along to
+    /// [`Executor::execute`].
+    pub reply_to: mpsc::UnboundedSender<Out>,
+    pub queued: Arc<AtomicUsize>,
+}
+
+/// The execution thread has stopped.
 #[derive(Debug)]
 pub struct ExecutorGone;
 
@@ -249,18 +283,28 @@ impl Executor {
         saved.await.map_err(|_| gone())?
     }
 
-    /// Registers a new connection. The returned receiver fires when another
-    /// client kills this one (`CLIENT KILL`); the connection task must then
-    /// close the socket.
-    pub fn connect(&self, id: u64, addr: String, laddr: String) -> oneshot::Receiver<()> {
+    /// Registers a new connection. `killed` fires when another client kills
+    /// this one (`CLIENT KILL`), or the server drops it for exceeding its
+    /// output limit; the connection task must then close the socket. `out`
+    /// carries everything to write to the client.
+    pub fn connect(&self, id: u64, addr: String, laddr: String) -> ClientChannels {
         let (kill, killed) = oneshot::channel();
+        let (out_tx, out) = mpsc::unbounded_channel();
+        let queued = Arc::new(AtomicUsize::new(0));
         let _ = self.tx.send(Message::Connect {
             id,
             addr,
             laddr,
             kill,
+            out: out_tx.clone(),
+            queued: Arc::clone(&queued),
         });
-        killed
+        ClientChannels {
+            killed,
+            out,
+            reply_to: out_tx,
+            queued,
+        }
     }
 
     pub fn disconnect(&self, id: u64) {
@@ -269,8 +313,8 @@ impl Executor {
 
     /// Reports that the peer closed its end of the connection while a batch
     /// is in flight. If the client is blocked, its wait is abandoned and the
-    /// pending [`Executor::execute`] fails; otherwise nothing happens and the
-    /// batch completes normally.
+    /// connection receives [`Out::Abandon`]; otherwise nothing happens and
+    /// the batch completes normally.
     pub fn hangup(&self, id: u64) {
         let _ = self.tx.send(Message::Hangup { id });
     }
@@ -280,35 +324,56 @@ impl Executor {
         let _ = self.tx.send(Message::Tick);
     }
 
-    /// Runs `commands` in order for client `id` and returns the encoded
-    /// replies. This takes as long as the commands block.
-    pub async fn execute(
+    /// Hands `commands` to the execution thread, to run in order for client
+    /// `id`. Their replies arrive on the client's output channel, ending
+    /// with [`Out::Done`]; send no further batch before that.
+    pub fn execute(
         &self,
         id: u64,
         commands: Vec<Vec<Bytes>>,
-    ) -> Result<BatchReply, ExecutorGone> {
-        let (reply, response) = oneshot::channel();
+        out: &mpsc::UnboundedSender<Out>,
+    ) -> Result<(), ExecutorGone> {
         self.tx
             .send(Message::Batch {
                 id,
                 commands,
-                reply,
+                out: out.clone(),
             })
-            .map_err(|_| ExecutorGone)?;
-        response.await.map_err(|_| ExecutorGone)
+            .map_err(|_| ExecutorGone)
     }
 }
 
-/// One client's batch, part-way through. Dropping it without sending on
-/// `reply` makes the connection task close the socket.
+/// One client's batch, part-way through. Its replies so far are in the
+/// client's output buffer ([`ClientIo::buf`]).
 struct Job {
     id: u64,
     /// Commands not run yet.
     commands: VecDeque<Vec<Bytes>>,
-    /// Replies to the commands run so far.
-    out: BytesMut,
-    reply: oneshot::Sender<BatchReply>,
 }
+
+/// A connected client's output.
+struct ClientIo {
+    tx: mpsc::UnboundedSender<Out>,
+    /// Produced and not yet handed to the connection.
+    buf: BytesMut,
+    /// Handed to the connection and not yet written to the socket.
+    queued: Arc<AtomicUsize>,
+    /// Listed in [`State::dirty`].
+    dirty: bool,
+    /// Since when (milliseconds) the output waiting for this client has
+    /// been over the soft limit, if it is.
+    over_soft_limit_since: Option<u64>,
+}
+
+/// Limits on the output waiting for a client that is subscribed to
+/// something, as Redis's `client-output-buffer-limit pubsub 32mb 8mb 60`:
+/// a subscriber that does not read its messages is disconnected when the
+/// output waiting for it passes the hard limit, or has stayed over the soft
+/// limit for that many seconds. Ordinary clients have no limit, as in
+/// Redis: they only ever wait for the replies to what they sent.
+const PUBSUB_HARD_LIMIT: usize = 32 * 1024 * 1024;
+const PUBSUB_SOFT_LIMIT: usize = 8 * 1024 * 1024;
+const PUBSUB_SOFT_SECONDS: u64 = 60;
 
 /// A client waiting inside a blocking command.
 struct Parked {
@@ -355,9 +420,13 @@ struct State {
     stop: Option<oneshot::Sender<()>>,
     /// A background save still has keyspace to walk.
     save_has_work: bool,
-    /// Replies of finished batches, held until the append-only file has
-    /// been written.
-    outbox: Vec<(oneshot::Sender<BatchReply>, BatchReply)>,
+    /// Every connected client's output.
+    io: HashMap<u64, ClientIo>,
+    /// Clients with output in their buffer, to send at the next commit.
+    dirty: Vec<u64>,
+    /// Clients whose batch has finished since the last commit, and whether
+    /// to close the connection after its output.
+    done: Vec<(u64, bool)>,
 }
 
 impl State {
@@ -371,7 +440,9 @@ impl State {
             keyspace,
             stop: Some(stop),
             save_has_work: false,
-            outbox: Vec::new(),
+            io: HashMap::new(),
+            dirty: Vec::new(),
+            done: Vec::new(),
             server,
             clients: HashMap::new(),
             kill_switches: HashMap::new(),
@@ -439,8 +510,21 @@ impl State {
                     addr,
                     laddr,
                     kill,
+                    out,
+                    queued,
                 } => {
                     let mut client = ClientState::new(id, addr);
+                    client.output_queued = Arc::clone(&queued);
+                    self.io.insert(
+                        id,
+                        ClientIo {
+                            tx: out,
+                            buf: BytesMut::new(),
+                            queued,
+                            dirty: false,
+                            over_soft_limit_since: None,
+                        },
+                    );
                     rexyra_commands::acl::start_session(&self.server, &mut client);
                     client.laddr = laddr;
                     client.connected_at = now_ms();
@@ -452,28 +536,27 @@ impl State {
                 Message::Disconnect { id } => {
                     self.unpark(id);
                     self.kill_switches.remove(&id);
+                    self.io.remove(&id);
                     if let Some(mut client) = self.clients.remove(&id) {
                         unwatch_all(&mut client, &mut self.keyspace);
+                        pubsub::forget(&mut self.server, &mut client);
                     }
                 }
                 Message::Hangup { id } => {
-                    // Dropping the job fails the connection's `execute`.
-                    self.unpark(id);
+                    if self.unpark(id).is_some() {
+                        if let Some(io) = self.io.get(&id) {
+                            let _ = io.tx.send(Out::Abandon);
+                        }
+                    }
                 }
                 Message::SaveIfDirty { done } => {
                     let outcome =
                         persistence::prepare_exit(&mut self.server, &mut self.keyspace, now_ms());
                     let _ = done.send(outcome);
                 }
-                Message::Batch {
+                Message::Batch { id, commands, .. } => self.runnable.push_back(Job {
                     id,
-                    commands,
-                    reply,
-                } => self.runnable.push_back(Job {
-                    id,
-                    out: BytesMut::with_capacity(64 * commands.len()),
                     commands: commands.into(),
-                    reply,
                 }),
             }
             while let Some(job) = self.runnable.pop_front() {
@@ -482,15 +565,134 @@ impl State {
         }
     }
 
-    /// Makes what the finished batches changed durable, then lets their
-    /// clients know: the append-only file is written (and synced, with
-    /// `appendfsync always`) before any reply leaves.
+    /// Makes what the commands since the last commit changed durable, then
+    /// sends their output: the append-only file is written (and synced,
+    /// with `appendfsync always`) before any reply leaves.
     fn commit(&mut self) {
         if let Some(aof) = &mut self.server.aof {
             aof.flush(now_ms());
         }
-        for (reply, batch) in self.outbox.drain(..) {
-            let _ = reply.send(batch);
+        for (id, close) in std::mem::take(&mut self.done) {
+            if let Some(io) = self.io.get_mut(&id) {
+                let data = io.buf.split().freeze();
+                io.queued.fetch_add(data.len(), Ordering::Relaxed);
+                let _ = io.tx.send(Out::Done { data, close });
+            }
+        }
+        let now = now_ms();
+        for id in std::mem::take(&mut self.dirty) {
+            let Some(io) = self.io.get_mut(&id) else {
+                continue;
+            };
+            io.dirty = false;
+            if io.buf.is_empty() {
+                continue;
+            }
+            let data = io.buf.split().freeze();
+            let queued = io.queued.fetch_add(data.len(), Ordering::Relaxed) + data.len();
+            let _ = io.tx.send(Out::Data(data));
+            let subscriber = self
+                .clients
+                .get(&id)
+                .is_some_and(|client| client.subscriptions.any());
+            if subscriber {
+                self.check_output_limit(id, queued, now);
+            }
+        }
+    }
+
+    /// Disconnects a subscriber whose output is piling up because it does
+    /// not read it.
+    fn check_output_limit(&mut self, id: u64, queued: usize, now: u64) {
+        let Some(io) = self.io.get_mut(&id) else {
+            return;
+        };
+        let over = if queued > PUBSUB_HARD_LIMIT {
+            true
+        } else if queued > PUBSUB_SOFT_LIMIT {
+            let since = *io.over_soft_limit_since.get_or_insert(now);
+            now.saturating_sub(since) >= PUBSUB_SOFT_SECONDS * 1000
+        } else {
+            io.over_soft_limit_since = None;
+            false
+        };
+        if !over {
+            return;
+        }
+        let addr = self
+            .clients
+            .get(&id)
+            .map(|client| client.addr.clone())
+            .unwrap_or_default();
+        warn!(
+            client = id,
+            addr = %addr,
+            queued,
+            "closed a Pub/Sub client for overcoming its output buffer limit"
+        );
+        // It stops receiving at once; the connection closes, and its
+        // disconnect then removes the rest.
+        self.io.remove(&id);
+        if let Some(client) = self.clients.get_mut(&id) {
+            pubsub::forget(&mut self.server, client);
+        }
+        if let Some(kill) = self.kill_switches.remove(&id) {
+            let _ = kill.send(());
+        }
+    }
+
+    /// Lists client `id` for sending at the next commit.
+    fn mark_dirty(&mut self, id: u64) {
+        if let Some(io) = self.io.get_mut(&id) {
+            if !io.dirty {
+                io.dirty = true;
+                self.dirty.push(id);
+            }
+        }
+    }
+
+    /// Appends the messages the last command published to their
+    /// receivers' output: after everything already produced for them, and,
+    /// for the client that ran the command, after its reply (`out`).
+    fn deliver_pushes(&mut self, client: &ClientState, out: &mut BytesMut) {
+        for (id, frame) in std::mem::take(&mut self.server.pushes) {
+            if id == client.id {
+                encode(&frame, client.proto, out);
+                continue;
+            }
+            // A receiver that has gone is simply skipped.
+            let Some(proto) = self.clients.get(&id).map(|target| target.proto) else {
+                continue;
+            };
+            if let Some(io) = self.io.get_mut(&id) {
+                encode(&frame, proto, &mut io.buf);
+                self.mark_dirty(id);
+            }
+        }
+    }
+
+    /// Takes client `id`'s output buffer, for commands to append to. Give
+    /// it back with [`State::put_buf`].
+    fn take_buf(&mut self, id: u64) -> BytesMut {
+        self.io
+            .get_mut(&id)
+            .map(|io| std::mem::take(&mut io.buf))
+            .unwrap_or_default()
+    }
+
+    /// Gives back a buffer taken with [`State::take_buf`], to be sent at the
+    /// next commit.
+    fn put_buf(&mut self, id: u64, mut buf: BytesMut) {
+        let Some(io) = self.io.get_mut(&id) else {
+            return;
+        };
+        if !io.buf.is_empty() {
+            // Output added while it was taken comes after.
+            buf.unsplit(std::mem::take(&mut io.buf));
+        }
+        io.buf = buf;
+        if !io.buf.is_empty() {
+            self.mark_dirty(id);
         }
     }
 
@@ -537,14 +739,16 @@ impl State {
             return;
         }
         for id in ready {
-            let Some(mut parked) = self.unpark(id) else {
+            let Some(parked) = self.unpark(id) else {
                 continue;
             };
             let Some(mut client) = self.clients.remove(&id) else {
                 continue;
             };
-            let step = self.step(&mut client, &parked.args, &mut parked.job.out);
+            let mut buf = self.take_buf(id);
+            let step = self.step(&mut client, &parked.args, &mut buf);
             self.clients.insert(id, client);
+            self.put_buf(id, buf);
             match step {
                 Step::Done => self.runnable.push_back(parked.job),
                 Step::Close => self.finish(parked.job),
@@ -571,17 +775,20 @@ impl State {
 
     /// Runs a job's commands until they are finished or one blocks.
     fn run_job(&mut self, mut job: Job) {
-        // Dropping `job.reply` without sending tells the connection task
-        // the client is unknown, and it closes the socket.
+        // A client that is gone (killed while its batch waited) has nobody
+        // to answer.
         let Some(mut client) = self.clients.remove(&job.id) else {
             return;
         };
+        let mut buf = self.take_buf(job.id);
         while let Some(args) = job.commands.pop_front() {
-            match self.step(&mut client, &args, &mut job.out) {
+            match self.step(&mut client, &args, &mut buf) {
                 Step::Done => {}
                 Step::Close => break,
                 Step::Blocked(request) => {
                     self.clients.insert(job.id, client);
+                    // What it has produced so far is sent while it waits.
+                    self.put_buf(job.id, buf);
                     return self.park(job, args, request);
                 }
             }
@@ -590,6 +797,7 @@ impl State {
             // element already handed over.
             if !self.parked.is_empty() {
                 self.clients.insert(job.id, client);
+                self.put_buf(job.id, buf);
                 self.serve_written_keys();
                 // A served client cannot disconnect this one: only messages
                 // from connections do that, and none is handled meanwhile.
@@ -597,25 +805,22 @@ impl State {
                     return;
                 };
                 client = back;
+                buf = self.take_buf(job.id);
             }
         }
         self.clients.insert(job.id, client);
+        self.put_buf(job.id, buf);
         self.finish(job);
     }
 
-    /// Queues a finished batch's replies; [`State::commit`] sends them.
+    /// Marks a batch finished; [`State::commit`] sends the rest of its
+    /// output and tells the connection.
     fn finish(&mut self, job: Job) {
         let close = self
             .clients
             .get(&job.id)
             .is_some_and(|client| client.close_after_reply);
-        self.outbox.push((
-            job.reply,
-            BatchReply {
-                data: job.out.freeze(),
-                close,
-            },
-        ));
+        self.done.push((job.id, close));
     }
 
     /// Runs one command for `client`, which must have been taken out of
@@ -644,6 +849,9 @@ impl State {
         // Encode with the protocol in effect *after* the command, so the
         // reply to `HELLO 3` is already RESP3.
         encode(&frame, client.proto, out);
+        if !self.server.pushes.is_empty() {
+            self.deliver_pushes(client, out);
+        }
         if client.close_after_reply {
             Step::Close
         } else {
@@ -669,7 +877,7 @@ impl State {
                     }
                 }
                 Effect::Unblock { id, error } => {
-                    let Some(mut parked) = self.unpark(id) else {
+                    let Some(parked) = self.unpark(id) else {
                         continue;
                     };
                     if let Some(client) = self.clients.get(&id) {
@@ -678,7 +886,10 @@ impl State {
                         } else {
                             Frame::NullArray
                         };
-                        encode(&frame, client.proto, &mut parked.job.out);
+                        let proto = client.proto;
+                        let mut buf = self.take_buf(id);
+                        encode(&frame, proto, &mut buf);
+                        self.put_buf(id, buf);
                         self.runnable.push_back(parked.job);
                     }
                 }
@@ -810,15 +1021,17 @@ impl State {
                         .is_some_and(|parked| parked.request.kind == kind)
                 })
             });
-            let Some(mut parked) = next.and_then(|id| self.unpark(id)) else {
+            let Some(parked) = next.and_then(|id| self.unpark(id)) else {
                 return;
             };
             let id = parked.job.id;
             let Some(mut client) = self.clients.remove(&id) else {
                 continue;
             };
-            let step = self.step(&mut client, &parked.args, &mut parked.job.out);
+            let mut buf = self.take_buf(id);
+            let step = self.step(&mut client, &parked.args, &mut buf);
             self.clients.insert(id, client);
+            self.put_buf(id, buf);
             match step {
                 Step::Done => self.runnable.push_back(parked.job),
                 Step::Close => self.finish(parked.job),
@@ -841,12 +1054,15 @@ impl State {
             if deadline > now {
                 break;
             }
-            let Some(mut parked) = self.unpark(id) else {
+            let Some(parked) = self.unpark(id) else {
                 self.deadlines.pop_first();
                 continue;
             };
             if let Some(client) = self.clients.get(&id) {
-                encode(&Frame::NullArray, client.proto, &mut parked.job.out);
+                let proto = client.proto;
+                let mut buf = self.take_buf(id);
+                encode(&Frame::NullArray, proto, &mut buf);
+                self.put_buf(id, buf);
                 self.runnable.push_back(parked.job);
             }
         }

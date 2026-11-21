@@ -12,10 +12,11 @@ use crate::{
 };
 
 /// One line of `CLIENT LIST`. Fields this server has no figure for (socket
-/// and buffer sizes) are reported as zero.
+/// and input buffer sizes) are reported as zero.
 fn describe(client: &ClientState, now: u64, out: &mut String) {
     let mut flags = String::new();
     for (set, flag) in [
+        (client.subscriptions.any(), 'P'),
         (client.blocked, 'b'),
         (client.multi.is_some(), 'x'),
         (client.no_evict, 'e'),
@@ -29,13 +30,16 @@ fn describe(client: &ClientState, now: u64, out: &mut String) {
         flags.push('N');
     }
     let seconds_since = |then: u64| now.saturating_sub(then) / 1000;
+    let omem = client
+        .output_queued
+        .load(std::sync::atomic::Ordering::Relaxed);
     let text = |value: &Option<Bytes>| value.as_deref().map(lossy).unwrap_or_default().into_owned();
     // Writing to a `String` cannot fail.
     let _ = writeln!(
         out,
-        "id={} addr={} laddr={} fd=0 name={} age={} idle={} flags={flags} db={} sub=0 psub=0 \
-         ssub=0 multi={} watch={} qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 rbs=0 rbp=0 obl=0 \
-         oll=0 omem=0 tot-mem=0 events=r cmd={} user={} redir=-1 resp={} lib-name={} \
+        "id={} addr={} laddr={} fd=0 name={} age={} idle={} flags={flags} db={} sub={} psub={} \
+         ssub={} multi={} watch={} qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 rbs=0 rbp=0 obl=0 \
+         oll=0 omem={omem} tot-mem={omem} events=r cmd={} user={} redir=-1 resp={} lib-name={} \
          lib-ver={}",
         client.id,
         client.addr,
@@ -44,6 +48,9 @@ fn describe(client: &ClientState, now: u64, out: &mut String) {
         seconds_since(client.connected_at),
         seconds_since(client.last_active),
         client.db,
+        client.subscriptions.channels.len(),
+        client.subscriptions.patterns.len(),
+        client.subscriptions.shard.len(),
         client.multi.as_ref().map_or(-1, |tx| tx.len() as i64),
         client.watches.len(),
         client.last_command,
@@ -75,20 +82,41 @@ fn all_clients<'a>(ctx: &'a Ctx<'_>) -> Vec<&'a ClientState> {
     clients
 }
 
-/// Checks a `TYPE` argument. Every client of this server is `normal`.
-fn is_normal_type(kind: &[u8]) -> Result<bool, Frame> {
-    if is(kind, "normal") {
-        Ok(true)
-    } else if ["master", "replica", "slave", "pubsub"]
-        .iter()
-        .any(|other| is(kind, other))
-    {
-        Ok(false)
-    } else {
-        Err(Frame::error(format!(
-            "ERR Unknown client type '{}'",
-            lossy(kind)
-        )))
+/// The kinds of client a `TYPE` filter can name. This server has no
+/// replication, so there are never any of the others (`master`, `replica`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClientType {
+    Normal,
+    PubSub,
+    Other,
+}
+
+impl ClientType {
+    /// A client subscribed to anything counts as `pubsub`, as in Redis.
+    fn of(client: &ClientState) -> ClientType {
+        if client.subscriptions.any() {
+            ClientType::PubSub
+        } else {
+            ClientType::Normal
+        }
+    }
+
+    fn parse(kind: &[u8]) -> Result<ClientType, Frame> {
+        if is(kind, "normal") {
+            Ok(ClientType::Normal)
+        } else if is(kind, "pubsub") {
+            Ok(ClientType::PubSub)
+        } else if ["master", "replica", "slave"]
+            .iter()
+            .any(|other| is(kind, other))
+        {
+            Ok(ClientType::Other)
+        } else {
+            Err(Frame::error(format!(
+                "ERR Unknown client type '{}'",
+                lossy(kind)
+            )))
+        }
     }
 }
 
@@ -96,10 +124,10 @@ fn is_normal_type(kind: &[u8]) -> Result<bool, Frame> {
 pub(crate) fn list(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
     reply((|| {
         let mut ids: Option<Vec<u64>> = None;
-        let mut include = true;
+        let mut wanted = None;
         match &args[2..] {
             [] => {}
-            [opt, kind] if is(opt, "TYPE") => include = is_normal_type(kind)?,
+            [opt, kind] if is(opt, "TYPE") => wanted = Some(ClientType::parse(kind)?),
             [opt, rest @ ..] if is(opt, "ID") && !rest.is_empty() => {
                 let parsed: Result<Vec<u64>, Frame> = rest
                     .iter()
@@ -115,11 +143,11 @@ pub(crate) fn list(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
         }
         ctx.client.last_command = "client|list";
         let mut out = String::new();
-        if include {
-            for client in all_clients(ctx) {
-                if ids.as_ref().is_none_or(|ids| ids.contains(&client.id)) {
-                    describe(client, ctx.now, &mut out);
-                }
+        for client in all_clients(ctx) {
+            if ids.as_ref().is_none_or(|ids| ids.contains(&client.id))
+                && wanted.is_none_or(|kind| kind == ClientType::of(client))
+            {
+                describe(client, ctx.now, &mut out);
             }
         }
         Ok(verbatim(out))
@@ -146,14 +174,13 @@ struct KillFilter<'a> {
     /// Kill clients at least this many seconds old.
     max_age: Option<u64>,
     user: Option<&'a [u8]>,
-    /// `TYPE` named a kind of client this server does not have.
-    nobody: bool,
+    kind: Option<ClientType>,
     skip_me: bool,
 }
 
 impl KillFilter<'_> {
     fn matches(&self, client: &ClientState, now: u64) -> bool {
-        !self.nobody
+        self.kind.is_none_or(|kind| kind == ClientType::of(client))
             && self.id.is_none_or(|id| id == client.id)
             && self.user.is_none_or(|user| user == client.user.as_bytes())
             && self.addr.is_none_or(|addr| addr == client.addr.as_bytes())
@@ -182,7 +209,7 @@ fn parse_kill_filter(mut options: &[Bytes]) -> Result<KillFilter<'_>, Frame> {
         } else if is(option, "LADDR") {
             filter.laddr = Some(value);
         } else if is(option, "TYPE") {
-            filter.nobody |= !is_normal_type(value)?;
+            filter.kind = Some(ClientType::parse(value)?);
         } else if is(option, "USER") {
             filter.user = Some(value);
         } else if is(option, "SKIPME") {
@@ -317,6 +344,7 @@ pub(crate) fn reset(ctx: &mut Ctx<'_>, _args: &[Bytes]) -> Frame {
     ctx.client.name = None;
     ctx.client.no_evict = false;
     ctx.client.no_touch = false;
+    crate::pubsub::forget(ctx.server, ctx.client);
     crate::acl::start_session(ctx.server, ctx.client);
     Frame::simple("RESET")
 }

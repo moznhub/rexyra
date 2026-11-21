@@ -4,7 +4,7 @@
 
 use crate::{
     acl, admin, aof, bitmaps, clients, connection, hashes, introspection, keys, lcs, lists, object,
-    persistence, scripting, sets, sort, strings, transactions, zsets, CommandSpec, Handler,
+    persistence, pubsub, scripting, sets, sort, strings, transactions, zsets, CommandSpec, Handler,
 };
 
 type Flags = &'static [&'static str];
@@ -38,6 +38,8 @@ const SCRIPT_RUN_RO: Flags = &[
     "no_mandatory_keys",
     "movablekeys",
 ];
+const PUBSUB_SUBSCRIBE: Flags = &["pubsub", "noscript", "loading", "stale"];
+const PUBSUB_PUBLISH: Flags = &["pubsub", "loading", "stale", "fast", "may_replicate"];
 const WRITE_BLOCKING: Flags = &["write", "blocking"];
 const WRITE_FAST_BLOCKING: Flags = &["write", "fast", "blocking"];
 const WRITE_OOM_BLOCKING: Flags = &["write", "denyoom", "blocking"];
@@ -193,6 +195,16 @@ pub static COMMANDS: &[CommandSpec] = &[
     cmd("slowlog", -2, &["admin", "loading", "stale"], NO_KEYS, "server", "2.2.12", "A container for slow log commands.", admin::slowlog),
     cmd("memory", -2, READ, NO_KEYS, "server", "4.0.0", "A container for memory diagnostics commands.", admin::memory),
     cmd("time", 1, &["loading", "stale", "fast"], NO_KEYS, "server", "2.6.0", "Returns the server time.", admin::time),
+    // --- pub/sub ----------------------------------------------------------
+    cmd("subscribe", -2, PUBSUB_SUBSCRIBE, NO_KEYS, "pubsub", "2.0.0", "Listens for messages published to channels.", pubsub::subscribe_cmd),
+    cmd("unsubscribe", -1, PUBSUB_SUBSCRIBE, NO_KEYS, "pubsub", "2.0.0", "Stops listening to messages posted to channels.", pubsub::unsubscribe_cmd),
+    cmd("psubscribe", -2, PUBSUB_SUBSCRIBE, NO_KEYS, "pubsub", "2.0.0", "Listens for messages published to channels that match one or more patterns.", pubsub::psubscribe),
+    cmd("punsubscribe", -1, PUBSUB_SUBSCRIBE, NO_KEYS, "pubsub", "2.0.0", "Stops listening to messages published to channels that match one or more patterns.", pubsub::punsubscribe),
+    cmd("ssubscribe", -2, PUBSUB_SUBSCRIBE, NO_KEYS, "pubsub", "7.0.0", "Listens for messages published to shard channels.", pubsub::ssubscribe),
+    cmd("sunsubscribe", -1, PUBSUB_SUBSCRIBE, NO_KEYS, "pubsub", "7.0.0", "Stops listening to messages posted to shard channels.", pubsub::sunsubscribe),
+    cmd("publish", 3, PUBSUB_PUBLISH, NO_KEYS, "pubsub", "2.0.0", "Posts a message to a channel.", pubsub::publish),
+    cmd("spublish", 3, PUBSUB_PUBLISH, NO_KEYS, "pubsub", "7.0.0", "Post a message to a shard channel", pubsub::spublish),
+    cmd("pubsub", -2, &[], NO_KEYS, "pubsub", "2.8.0", "A container for Pub/Sub commands.", pubsub::pubsub),
     cmd("reset", 1, &["noscript", "loading", "stale", "fast", "no_auth", "allow_busy"], NO_KEYS, "connection", "6.2.0", "Resets the connection.", clients::reset),
 
     // --- persistence ------------------------------------------------------

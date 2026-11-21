@@ -164,14 +164,18 @@ fn section(ctx: &mut Ctx<'_>, name: &str, out: &mut String) {
                  instantaneous_ops_per_sec:{}\r\n\
                  expired_keys:{}\r\n\
                  evicted_keys:{}\r\n\
-                 pubsub_channels:0\r\n\
-                 pubsub_patterns:0\r\n\
+                 pubsub_channels:{}\r\n\
+                 pubsub_patterns:{}\r\n\
+                 pubsubshard_channels:{}\r\n\
                  total_error_replies:{}\r\n",
                 stats.connections,
                 stats.commands,
                 stats.ops_per_sec(),
                 stats.expired_keys,
                 stats.evicted_keys,
+                server.pubsub.channel_count(),
+                server.pubsub.pattern_count(),
+                server.pubsub.shard_channel_count(),
                 stats.error_replies,
             );
         }

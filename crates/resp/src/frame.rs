@@ -45,6 +45,10 @@ pub enum Frame {
     Set(Vec<Frame>),
     /// RESP3 `>`; RESP2 array.
     Push(Vec<Frame>),
+    /// Several replies sent back to back, for a command that answers with
+    /// more than one (`SUBSCRIBE a b` confirms each channel separately).
+    /// Never decoded; only produced by the server.
+    Sequence(Vec<Frame>),
 }
 
 impl Frame {
