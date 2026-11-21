@@ -381,10 +381,12 @@ pub(crate) fn pubsub(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
         Frame::Integer(pubsub.pattern_count() as i64)
     } else if is(sub, "HELP") && rest.is_empty() {
         Frame::Array(HELP.iter().map(|line| Frame::simple(*line)).collect())
-    } else if ["CHANNELS", "SHARDCHANNELS", "NUMPAT", "HELP"]
-        .iter()
-        .any(|known| is(sub, known))
-    {
+    } else if is(sub, "CHANNELS") || is(sub, "SHARDCHANNELS") {
+        Frame::error(format!(
+            "ERR unknown subcommand or wrong number of arguments for '{}'. Try PUBSUB HELP.",
+            lossy(sub)
+        ))
+    } else if is(sub, "NUMPAT") || is(sub, "HELP") {
         wrong_subcommand_arity("pubsub", sub)
     } else {
         unknown_subcommand(&lossy(&args[0]).to_ascii_uppercase(), sub)
@@ -521,6 +523,10 @@ mod tests {
             h.run("PING hello"),
             Frame::Array(vec![bulk("pong"), bulk("hello")])
         );
+        assert_eq!(
+            h.run("CLIENT INFO"),
+            err("ERR Can't execute 'client|info': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context")
+        );
         h.run("UNSUBSCRIBE");
         assert_eq!(h.run("PING"), Frame::simple("PONG"));
         assert_eq!(h.run("GET k"), Frame::Null);
@@ -631,6 +637,10 @@ mod tests {
         assert_eq!(
             h.run("PUBSUB NUMPAT x"),
             err("ERR wrong number of arguments for 'pubsub|numpat' command")
+        );
+        assert_eq!(
+            h.run("PUBSUB CHANNELS a b"),
+            err("ERR unknown subcommand or wrong number of arguments for 'CHANNELS'. Try PUBSUB HELP.")
         );
         assert_eq!(
             h.run("PUBSUB FOO"),

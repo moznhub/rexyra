@@ -182,6 +182,15 @@ const CONTAINERS: &[(&str, Subcommands)] = &[
     ),
 ];
 
+/// The name of a command as Redis reports it in errors: `name`, or for a
+/// container of subcommands `name|subcommand`.
+pub(crate) fn full_name(spec: &CommandSpec, args: &[Bytes]) -> String {
+    match (subcommands(spec.name), args.get(1)) {
+        (Some(_), Some(sub)) => format!("{}|{}", spec.name, lossy(sub).to_ascii_lowercase()),
+        _ => spec.name.to_owned(),
+    }
+}
+
 fn subcommands(command: &str) -> Option<Subcommands> {
     CONTAINERS
         .iter()

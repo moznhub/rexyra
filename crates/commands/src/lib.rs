@@ -282,7 +282,7 @@ pub fn dispatch(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
         && ctx.client.subscriptions.any()
         && !pubsub::allowed_while_subscribed(spec.name)
     {
-        let error = pubsub::subscribed_mode_error(spec.name);
+        let error = pubsub::subscribed_mode_error(&acl::full_name(spec, args));
         ctx.server.record_rejected(Some(spec), &error);
         return error;
     }
