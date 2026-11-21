@@ -1,0 +1,553 @@
+# Every command rexyra-server implements that Redis sends keyspace
+# notifications for, the variants that differ (no change, a key emptied, a
+# key that is missing or expired), and reads of missing keys (`keymiss`).
+# Run with --flags KEA, KEAmn and with one class at a time (Kg, E$, ...).
+
+# --- strings ----------------------------------------------------------------
+SET s1 v
+SET s1 v2 EX 100
+SET s1 v3 KEEPTTL
+SET s1 v4 PX 100000 GET
+SET s1 v NX
+SET s1 v XX
+SET nokey v XX
+SET s2 v GET
+SET s2 v GET NX
+SET s2b v PXAT 1
+EXISTS s2b
+SET s2c v EXAT 99999999999
+SETNX s3 a
+SETNX s3 b
+SETEX s4 100 v
+PSETEX s5 100000 v
+SETEX s4 0 v
+GETSET s4 w
+GETSET newgs w
+GETDEL s5
+GETDEL nokey
+GETEX s1 EX 100
+GETEX s1 PERSIST
+GETEX s1
+GETEX s1 PX 100000
+GETEX s1 PXAT 1
+GETEX nokey EX 10
+SET s1 v
+GETEX s1 EXAT 1
+MSET m1 a m2 b
+MSETNX m3 a m4 b
+MSETNX m3 a m5 b
+INCR n
+DECR n
+INCRBY n 5
+DECRBY n 2
+INCRBYFLOAT f 1.5
+INCR s4
+INCR newcounter
+APPEND a1 x
+APPEND a1 y
+APPEND a1 ""
+SETRANGE r1 3 abc
+SETRANGE r1 0 ""
+SETRANGE r2 0 ""
+SETRANGE r1 0 z
+GETRANGE r1 0 -1
+GETRANGE nokey 0 -1
+STRLEN nokey
+SUBSTR nokey 0 1
+LCS r1 a1
+LCS nok1 nok2
+MGET m1 nokey m2 nokey2
+GET nokey
+
+# --- bitmaps ----------------------------------------------------------------
+SETBIT b1 7 1
+SETBIT b1 7 1
+SETBIT b1 6 0
+SETBIT nob 3 0
+GETBIT nokey 7
+BITCOUNT nokey
+BITPOS nokey 1
+BITOP AND bd b1 nokey
+BITOP OR bd b1 b1
+BITOP AND bd nokey nokey2
+BITOP NOT bd2 nokey
+BITOP XOR bd3 b1
+BITFIELD bf SET u8 0 255
+BITFIELD bf GET u8 0
+BITFIELD bf INCRBY u8 0 1
+BITFIELD bf OVERFLOW FAIL INCRBY u8 0 300
+BITFIELD nobf GET u8 0
+BITFIELD nobf2 OVERFLOW FAIL INCRBY u8 0 300
+BITFIELD bf GET u8 0 SET u8 8 1
+
+# --- generic ----------------------------------------------------------------
+DEL m1 nokey m2
+UNLINK m3 m4 nokey
+EXISTS s1 nokey
+TYPE nokey
+TOUCH s1 nokey
+TTL nokey
+PTTL s3
+EXPIRETIME nokey
+PEXPIRETIME s3
+OBJECT ENCODING nokey
+OBJECT FREQ nokey
+MEMORY USAGE nokey
+RENAME s3 s3r
+RENAME s3r s3r
+RENAME s4 s3r
+RENAMENX s3r s4n
+RENAMENX s4n n
+RENAMENX s4n s4n
+RENAME nokey x
+COPY s4n c1
+COPY s4n c1
+COPY s4n c1 REPLACE
+COPY s4n c1 DB 1
+COPY s4n c1 DB 1 REPLACE
+COPY nokey c2
+COPY s4n s4n
+MOVE c1 2
+MOVE c1 2
+MOVE nokey 2
+SET c1 again
+MOVE c1 1
+[d1] SELECT 1
+[d1] DEL c1
+[d1] SET k1 v
+[d1] EXPIRE k1 100
+[d1] FLUSHDB
+EXPIRE n 100
+EXPIRE n 100 NX
+EXPIRE n 200 XX
+PEXPIRE n 100000 GT
+PEXPIRE n 1000 GT
+EXPIREAT n 9999999999
+PEXPIREAT n 9999999999000
+PERSIST n
+PERSIST n
+PERSIST nokey
+EXPIRE n 0
+EXPIRE nokey 10
+SET e1 v
+EXPIRE e1 -1
+SET e2 v
+PEXPIREAT e2 1
+SET e3 v
+EXPIREAT e3 1
+RESTORE rk 0 "\x00\x05hello\x0c\x00\xa8\x04\xeb\xb6\x9f\x1e\xbe\x43"
+RESTORE rk 0 "\x00\x05hello\x0c\x00\xa8\x04\xeb\xb6\x9f\x1e\xbe\x43"
+RESTORE rk 0 "\x00\x05hello\x0c\x00\xa8\x04\xeb\xb6\x9f\x1e\xbe\x43" REPLACE
+RESTORE rk2 100000 "\x00\x05hello\x0c\x00\xa8\x04\xeb\xb6\x9f\x1e\xbe\x43"
+RESTORE rk2 1 "\x00\x05hello\x0c\x00\xa8\x04\xeb\xb6\x9f\x1e\xbe\x43" ABSTTL REPLACE
+RESTORE rk3 1 "\x00\x05hello\x0c\x00\xa8\x04\xeb\xb6\x9f\x1e\xbe\x43" ABSTTL
+~DUMP rk
+DUMP nokey
+~RANDOMKEY
+SCAN 0 MATCH nothing* COUNT 1000
+
+# --- sort -------------------------------------------------------------------
+RPUSH sl 3 1 2
+SORT sl
+SORT sl STORE sd
+SORT sl STORE sd
+SORT nokey STORE sd
+SORT nokey STORE sd
+SORT sl BY nosort GET # STORE sd2
+SET w_1 3
+SORT sl BY w_*
+HSET h_1 f one
+SORT sl BY nosort GET h_*->f GET #
+SORT sl LIMIT 0 1 STORE sd3
+SORT sl LIMIT 5 1 STORE sd3
+
+# --- lists ------------------------------------------------------------------
+LPUSH l1 a b
+RPUSH l1 c
+LPUSHX l1 d
+LPUSHX nol x
+RPUSHX l1 e
+RPUSHX nol x
+LPOP l1
+RPOP l1 2
+LPOP nol
+RPOP nol 2
+LINSERT l1 BEFORE b z
+LINSERT l1 BEFORE nomatch z
+LINSERT nol BEFORE a z
+LSET l1 0 q
+LSET nol 0 q
+LREM l1 0 q
+LREM l1 0 nomatch
+LTRIM l1 0 0
+LTRIM l1 0 0
+LTRIM l1 1 0
+LTRIM nol 0 1
+LRANGE nol 0 -1
+LLEN nol
+LINDEX nol 0
+LPOS nol a
+RPUSH l2 a b c d
+LMOVE l2 l3 LEFT RIGHT
+RPOPLPUSH l2 l3
+LMOVE l2 l3 RIGHT LEFT
+LMOVE l2 l4 RIGHT LEFT
+LMOVE l3 l3 LEFT RIGHT
+LMOVE nol l3 LEFT RIGHT
+RPUSH l5 only
+LMOVE l5 l5 LEFT RIGHT
+RPOPLPUSH l5 l6
+LMPOP 2 nol l3 LEFT COUNT 10
+RPUSH l4 x y
+LMPOP 1 l4 RIGHT
+LMPOP 1 nol RIGHT
+LPOP l4 0
+RPUSH l7 a b
+LREM l7 0 a
+LREM l7 0 b
+
+# --- blocking commands --------------------------------------------------------
+[b1] BLPOP bq 0 &
+LPUSH bq v
+!wait b1
+[b1] BRPOP bq 0 &
+RPUSH bq a b
+!wait b1
+LPOP bq
+[b1] BLMOVE bsrc bdst LEFT RIGHT 0 &
+RPUSH bsrc x
+!wait b1
+[b1] BRPOPLPUSH bsrc bdst 0 &
+RPUSH bsrc y
+!wait b1
+[b1] BLMPOP 0 1 bq2 LEFT COUNT 5 &
+LPUSH bq2 z y
+!wait b1
+RPUSH bq3 a
+BLPOP bq3 0
+BLPOP nobq 0.05
+[b1] BLPOP bq4 0 &
+[b2] BLPOP bq4 0 &
+RPUSH bq4 a b c
+!wait b1
+!wait b2
+LPOP bq4
+[b1] BLPOP bq5 0 &
+MULTI
+LPUSH bq5 a
+LPUSH bq5 b
+DEL bq5
+EXEC
+LPUSH bq5 c
+!wait b1
+[b1] BZPOPMIN bz 0 &
+ZADD bz 1 a
+!wait b1
+[b1] BZPOPMAX bz 0 &
+ZADD bz 1 a 2 b
+!wait b1
+DEL bz
+[b1] BZMPOP 0 1 bz MIN COUNT 5 &
+ZADD bz 3 c
+!wait b1
+ZADD bz2 1 a
+BZPOPMIN bz2 0
+[b1] BLMOVE bsrc2 bsrc2 LEFT RIGHT 0 &
+RPUSH bsrc2 only
+!wait b1
+DEL bsrc2 bdst
+
+# --- hashes -----------------------------------------------------------------
+HSET h f v f2 v2
+HSET h f v
+HMSET h f3 v3
+HSETNX h f x
+HSETNX h f9 x
+HSETNX newh f x
+HDEL h f nofield
+HDEL h nofield
+HDEL noh f
+HINCRBY h n 1
+HINCRBYFLOAT h fl 1.5
+HINCRBY h f2 1
+HGET noh f
+HMGET noh f g
+HGETALL noh
+HKEYS noh
+HVALS noh
+HLEN noh
+HEXISTS noh f
+HSTRLEN noh f
+HSCAN noh 0
+HRANDFIELD noh
+HDEL h f2 f3 f9 n fl
+
+# --- sets -------------------------------------------------------------------
+SADD st a b c
+SADD st a
+SREM st a nomember
+SREM st zz
+SREM nos a
+SMOVE st t2 b
+SMOVE st t2 nomember
+SMOVE st st c
+SMOVE nos t2 c
+SMOVE st t2 c
+SADD t3 x
+SADD t2 x
+SMOVE t3 t2 x
+SADD sp a b c
+~SPOP sp
+~SPOP sp 1
+~SPOP sp 5
+SPOP nosp
+SPOP nosp 3
+SADD sp1 a
+~SPOP sp1
+SADD sp2 a b
+~SPOP sp2 0
+SADD sa 1 2 3
+SADD sb 2 3 4
+SINTERSTORE si sa sb
+SUNIONSTORE su sa sb
+SDIFFSTORE sd sa sb
+SINTERSTORE si sa nos
+SINTERSTORE si sa nos
+SDIFFSTORE nosd nos sa
+SUNIONSTORE su nos nos2
+SINTER sa nos
+SINTER nos sa
+SUNION nos sa
+SDIFF nos sa
+SDIFF sa nos
+SINTERCARD 2 nos sa
+SCARD nos
+SISMEMBER nos a
+SMISMEMBER nos a b
+SMEMBERS nos
+SRANDMEMBER nos
+SSCAN nos 0
+
+# --- sorted sets --------------------------------------------------------------
+ZADD z 1 a 2 b 3 c
+ZADD z 1 a
+ZADD z XX CH 5 a
+ZADD z XX 1 nomember
+ZADD z NX 9 a
+ZADD z INCR 1 a
+ZADD z NX INCR 1 a
+ZADD z GT 1 a
+ZINCRBY z 1 b
+ZINCRBY newz 1 b
+ZREM z a nomember
+ZREM z nomember
+ZREM noz a
+ZADD z2 1 a 2 b 3 c 4 d 5 e
+ZREMRANGEBYRANK z2 0 0
+ZREMRANGEBYRANK z2 10 20
+ZREMRANGEBYSCORE z2 2 2
+ZREMRANGEBYSCORE z2 100 200
+ZADD zl 0 a 0 b 0 c
+ZREMRANGEBYLEX zl [a [a
+ZREMRANGEBYLEX zl [x [z
+ZREMRANGEBYLEX zl - +
+ZREMRANGEBYRANK z2 0 -1
+ZREMRANGEBYSCORE noz 0 1
+ZPOPMIN z
+ZPOPMAX z
+ZADD z 1 a 2 b
+ZPOPMIN z 10
+ZPOPMIN noz
+ZPOPMAX noz 2
+ZADD z3 1 a 2 b 3 c
+ZMPOP 2 noz z3 MIN COUNT 2
+ZMPOP 1 z3 MAX COUNT 5
+ZMPOP 1 noz MAX
+ZADD za 1 a 2 b
+ZADD zb 2 b 3 c
+ZUNIONSTORE zu 2 za zb
+ZINTERSTORE zi 2 za zb
+ZDIFFSTORE zd 2 za zb
+ZRANGESTORE zr za 0 -1
+ZINTERSTORE zi 2 za noz
+ZINTERSTORE zi 2 za noz
+ZDIFFSTORE zd 2 noz za
+ZUNIONSTORE zu 2 noz noz2
+ZRANGESTORE zr noz 0 -1
+ZRANGESTORE zr2 za 5 10
+ZUNION 2 noz noz2
+ZINTER 2 noz za
+ZDIFF 2 noz za
+ZINTERCARD 2 noz za
+ZCARD noz
+ZSCORE noz a
+ZMSCORE noz a b
+ZRANK noz a
+ZREVRANK noz a
+ZCOUNT noz 0 1
+ZLEXCOUNT noz - +
+ZRANGE noz 0 -1
+ZREVRANGE noz 0 -1
+ZRANGEBYSCORE noz 0 1
+ZREVRANGEBYSCORE noz 1 0
+ZRANGEBYLEX noz - +
+ZREVRANGEBYLEX noz + -
+ZSCAN noz 0
+ZRANDMEMBER noz
+
+# --- transactions and scripts -------------------------------------------------
+MULTI
+SET tx1 a
+INCR tx2
+GET notx
+DEL tx1
+EXEC
+MULTI
+SET tx3 a
+DISCARD
+WATCH tx2
+MULTI
+INCR tx2
+EXEC
+EVAL "redis.call('SET', KEYS[1], 'x'); redis.call('LPUSH', KEYS[2], 'a'); return redis.call('GET', KEYS[3])" 3 ev1 ev2 noev
+EVAL "redis.call('DEL', KEYS[1]); return redis.pcall('INCR', KEYS[2])" 2 ev1 ev2
+EVAL "redis.call('SET', KEYS[1], 'y'); return redis.call('INCR', KEYS[1])" 1 ev3
+EVAL "return redis.call('EXISTS', KEYS[1])" 1 noev
+FUNCTION LOAD "#!lua name=ksn\nredis.register_function('f', function(keys, args) redis.call('HSET', keys[1], 'a', 'b'); return redis.call('INCR', keys[2]) end)"
+FCALL f 2 fh fk
+FUNCTION DELETE ksn
+MULTI
+EVAL "return redis.call('RPUSH', KEYS[1], 'a')" 1 evm
+SADD evs a
+EXEC
+
+# --- databases ----------------------------------------------------------------
+[d3] SELECT 3
+[d3] SET k v
+[d3] LPUSH l a
+[d3] GET nokey
+SWAPDB 0 3
+SWAPDB 0 3
+[d3] FLUSHDB
+SET fl1 a
+SET fl2 b
+FLUSHDB
+SET fl1 a
+[d3] SET fl2 b
+FLUSHALL
+
+# --- expiry ---------------------------------------------------------------------
+SET x1 v PX 50
+RPUSH x1l a
+PEXPIRE x1l 50
+!sleep 400
+DEBUG SET-ACTIVE-EXPIRE 0
+SET x2 v PX 20
+RPUSH x3 a
+PEXPIRE x3 20
+HSET x4 f v
+PEXPIRE x4 20
+SET x5 v PX 20
+SET x6 v PX 20
+SET x7 v PX 20
+SET x8 v PX 20
+SET x9 v PX 20
+SET x10 v PX 20
+SADD x11 a
+PEXPIRE x11 20
+SET x12 v PX 20
+SET x13 v PX 20
+SET x14 v PX 20
+ZADD x15 1 a
+PEXPIRE x15 20
+SET x16 v PX 20
+SET x17 v PX 20
+SET x18 v PX 20
+SET x19 1 PX 20
+!sleep 100
+GET x2
+LPUSH x3 b
+HGET x4 f
+SET x5 w
+EXISTS x6
+TTL x7
+DEL x8
+RENAME x9 y
+MGET x10 x10
+SMEMBERS x11
+SETNX x12 w
+EVAL "return redis.call('GET', KEYS[1])" 1 x13
+MULTI
+GET x14
+ZADD x15 2 b
+EXEC
+COPY x16 x16c
+APPEND x17 w
+EXPIRE x18 100
+INCR x19
+SET y1 v PX 20
+!sleep 100
+DBSIZE
+SCAN 0
+SCAN 0
+~RANDOMKEY
+KEYS *
+DEBUG SET-ACTIVE-EXPIRE 1
+!sleep 400
+FLUSHALL
+
+# --- eviction -------------------------------------------------------------------
+CONFIG SET maxmemory-policy volatile-ttl
+SET plain1 v
+SET victim1 v EX 1000
+SET victim2 v EX 2000
+SETRANGE filler 300000 x
+!maxmemory +100000
+SETRANGE filler2 200000 x
+ECHO evict
+SET another v
+!maxmemory 0
+CONFIG SET maxmemory-policy noeviction
+FLUSHALL
+
+# --- the setting itself ---------------------------------------------------------
+CONFIG GET notify-keyspace-events
+CONFIG SET notify-keyspace-events ""
+CONFIG GET notify-keyspace-events
+CONFIG SET notify-keyspace-events K
+CONFIG GET notify-keyspace-events
+CONFIG SET notify-keyspace-events E
+CONFIG GET notify-keyspace-events
+CONFIG SET notify-keyspace-events A
+CONFIG GET notify-keyspace-events
+CONFIG SET notify-keyspace-events KA
+CONFIG GET notify-keyspace-events
+CONFIG SET notify-keyspace-events AKE
+CONFIG GET notify-keyspace-events
+CONFIG SET notify-keyspace-events EKAnm
+CONFIG GET notify-keyspace-events
+CONFIG SET notify-keyspace-events Kg$lshzxetdnm
+CONFIG GET notify-keyspace-events
+CONFIG SET notify-keyspace-events Kxeg
+CONFIG GET notify-keyspace-events
+CONFIG SET notify-keyspace-events lK
+CONFIG GET notify-keyspace-events
+CONFIG SET notify-keyspace-events KEAx
+CONFIG GET notify-keyspace-events
+CONFIG SET notify-keyspace-events KEAb
+CONFIG GET notify-keyspace-events
+CONFIG SET notify-keyspace-events kea
+CONFIG GET notify-keyspace-events
+CONFIG SET notify-keyspace-events "K E"
+CONFIG GET notify-keyspace-events
+CONFIG SET notify-keyspace-events KK
+CONFIG GET notify-keyspace-events
+CONFIG SET notify-keyspace-events g$
+CONFIG GET notify-keyspace-events
+CONFIG SET notify-keyspace-events Km
+CONFIG GET notify-keyspace-events
+CONFIG GET notify-*
+CONFIG SET notify-keyspace-events Kg notify-keyspace-events E$
+CONFIG SET notify-keyspace-events Kg maxmemory-samples 5
+CONFIG GET notify-keyspace-events
+CONFIG SET notify-keyspace-events KEA

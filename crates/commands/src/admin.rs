@@ -296,6 +296,7 @@ const PARAMETERS: &[(&str, Access)] = &[
     ("requirepass", Access::Mutable),
     ("protected-mode", Access::Mutable),
     ("enable-debug-command", Access::Immutable),
+    ("notify-keyspace-events", Access::Mutable),
     ("proto-max-bulk-len", Access::Fixed),
     ("hash-max-listpack-entries", Access::Fixed),
     ("hash-max-listpack-value", Access::Fixed),
@@ -347,6 +348,7 @@ fn parameter_value(ctx: &Ctx<'_>, name: &str) -> String {
         "requirepass" => server.requirepass.clone(),
         "protected-mode" => yes_no(server.protected_mode),
         "enable-debug-command" => server.enable_debug_command.name().to_owned(),
+        "notify-keyspace-events" => crate::notify::format(server.notify_flags),
         "proto-max-bulk-len" => (512 * 1024 * 1024).to_string(),
         "hash-max-listpack-entries" => HASH_COMPACT_MAX_ENTRIES.to_string(),
         "set-max-intset-entries" => INTSET_MAX_ENTRIES.to_string(),
@@ -401,6 +403,7 @@ enum Change {
     RequirePass(String),
     ProtectedMode(bool),
     SaveDelay(u64),
+    NotifyFlags(u32),
 }
 
 fn config_set(ctx: &mut Ctx<'_>, pairs: &[Bytes]) -> Result<Frame, Frame> {
@@ -438,6 +441,14 @@ fn config_set(ctx: &mut Ctx<'_>, pairs: &[Bytes]) -> Result<Frame, Frame> {
         if name == "requirepass" {
             // Taken as it is: a password is not text to be normalised.
             changes.push(Change::RequirePass(lossy(&pair[1]).into_owned()));
+            seen.push(name);
+            continue;
+        }
+        if name == "notify-keyspace-events" {
+            // Case matters: `K` and `k` are not the same.
+            let flags = crate::notify::parse(&pair[1])
+                .ok_or_else(|| failed(&name, crate::notify::ERR_INVALID))?;
+            changes.push(Change::NotifyFlags(flags));
             seen.push(name);
             continue;
         }
@@ -556,6 +567,10 @@ fn config_set(ctx: &mut Ctx<'_>, pairs: &[Bytes]) -> Result<Frame, Frame> {
                 ctx.server.refresh_protection();
             }
             Change::SaveDelay(micros) => ctx.server.rdb_key_save_delay = micros,
+            Change::NotifyFlags(flags) => {
+                ctx.server.notify_flags = flags;
+                crate::notify::sync(ctx.server, ctx.keyspace);
+            }
             Change::MaxMemory(bytes) => ctx.server.maxmemory = bytes,
             Change::Policy(policy) => ctx.server.maxmemory_policy = policy,
             Change::Samples(samples) => ctx.server.maxmemory_samples = samples,
@@ -1129,6 +1144,18 @@ mod tests {
     }
 
     #[test]
+    fn debug_set_active_expire_turns_the_expiry_cycle_off_and_on() {
+        let mut h = Harness::new();
+        h.server.enable_debug_command = DebugCommand::Yes;
+        assert!(h.server.active_expire);
+        assert_eq!(h.run("DEBUG SET-ACTIVE-EXPIRE 0"), Frame::ok());
+        assert!(!h.server.active_expire);
+        assert_eq!(h.run("DEBUG set-active-expire 1"), Frame::ok());
+        assert!(h.server.active_expire);
+        assert!(h.run("DEBUG SET-ACTIVE-EXPIRE").is_error());
+    }
+
+    #[test]
     #[should_panic(expected = "DEBUG PANIC called by client 7")]
     fn debug_panic_panics() {
         let mut h = Harness::new();
@@ -1171,9 +1198,11 @@ const ERR_DEBUG_NOT_ALLOWED: &str = "ERR DEBUG command not allowed. If the enabl
     option is set to \"local\", you can run it from a local connection, otherwise you need to set \
     this option in the configuration file, and then restart the server.";
 
-/// `DEBUG PANIC`, the only subcommand: stops the server as an internal
-/// error would, so that what happens then (the process exits and the
-/// service manager restarts it) can be tested.
+/// `DEBUG PANIC` stops the server as an internal error would, so that what
+/// happens then (the process exits and the service manager restarts it)
+/// can be tested. `DEBUG SET-ACTIVE-EXPIRE 0|1` stops and restarts the
+/// periodic deletion of expired keys, so that tests can see keys expire
+/// when they are accessed.
 pub(crate) fn debug(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
     let local = || {
         ctx.client
@@ -1191,6 +1220,11 @@ pub(crate) fn debug(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
     }
     if args.len() == 2 && is(&args[1], "PANIC") {
         panic!("DEBUG PANIC called by client {}", ctx.client.id);
+    }
+    if args.len() == 3 && is(&args[1], "SET-ACTIVE-EXPIRE") {
+        // Like Redis's `atoi`: anything that is not a non-zero number is 0.
+        ctx.server.active_expire = crate::int(&args[2]).is_ok_and(|n| n != 0);
+        return Frame::ok();
     }
     Frame::error(format!(
         "ERR unknown subcommand or wrong number of arguments for '{}'. Try DEBUG HELP.",

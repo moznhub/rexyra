@@ -543,8 +543,8 @@ pub(crate) fn propagate(
         return;
     };
     let replacement = aof.take_replacement();
-    // Keys this command found expired went before anything it did itself.
-    log_expired(aof, ctx.keyspace);
+    // Keys this command found expired were logged as they went, before
+    // anything it did itself (see `notify::flush`).
     if failed || waiting {
         return;
     }
@@ -559,19 +559,16 @@ pub(crate) fn propagate(
     }
 }
 
-fn log_expired(aof: &mut Aof, keyspace: &mut Keyspace) {
-    for (db, key) in keyspace.take_expired() {
-        aof.log(db, &[&b"DEL"[..], &key[..]]);
-    }
-}
-
 /// Periodic work for the append-only file: logs keys removed by active
 /// expiry, writes and syncs the log, and starts a rewrite when it is due.
 pub fn tick(server: &mut Server, keyspace: &mut Keyspace, now: u64) {
+    if server.aof.is_none() {
+        return;
+    }
+    crate::notify::flush(server, keyspace);
     let Some(aof) = &mut server.aof else {
         return;
     };
-    log_expired(aof, keyspace);
     aof.tick(now);
     let due = aof.should_rewrite(&server.aof_settings);
     if (due || server.aof_rewrite_scheduled) && server.bgsave.is_none() {
@@ -673,7 +670,7 @@ pub fn enable(server: &mut Server, keyspace: &mut Keyspace, now: u64) -> io::Res
     };
     server.aof = Some(Aof::open(dir, &server.aof_settings, fresh)?);
     server.aof_settings.enabled = true;
-    keyspace.track_expired(true);
+    crate::notify::sync(server, keyspace);
     if server.bgsave.is_some() {
         server.aof_rewrite_scheduled = true;
         Ok(())
@@ -692,7 +689,7 @@ pub fn disable(server: &mut Server, keyspace: &mut Keyspace, now: u64) {
     }
     server.aof_settings.enabled = false;
     server.aof_rewrite_scheduled = false;
-    keyspace.track_expired(false);
+    crate::notify::sync(server, keyspace);
 }
 
 // --- loading ------------------------------------------------------------------
@@ -873,7 +870,7 @@ pub fn load(server: &mut Server, now: u64) -> Result<(Keyspace, AofLoaded), Stri
     let aof = Aof::open(dir.clone(), &settings, manifest)
         .map_err(|error| io_error("open the append-only file in", &dir, error))?;
     server.aof = Some(aof);
-    keyspace.track_expired(true);
+    crate::notify::sync(server, &mut keyspace);
     // Replay went through the normal command path; none of it is news.
     server.stats.reset();
     server.dirty = 0;

@@ -5,6 +5,7 @@ use bytes::Bytes;
 use rexyra_engine::{glob_match, SetTtl};
 use rexyra_resp::Frame;
 
+use crate::notify::{self, notify, notify_in, GENERIC};
 use crate::{int, is, lossy, reply, Ctx, ERR_SYNTAX};
 
 const ERR_NO_SUCH_KEY: &str = "ERR no such key";
@@ -63,9 +64,15 @@ fn flush_mode(args: &[Bytes]) -> Option<bool> {
 
 /// `DEL key [key ...]`
 pub(crate) fn del(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
-    let (db, now) = ctx.db();
-    let removed = args[1..].iter().filter(|key| db.remove(key, now)).count();
-    Frame::Integer(removed as i64)
+    let mut removed = 0;
+    for key in &args[1..] {
+        let (db, now) = ctx.db();
+        if db.remove(key, now) {
+            removed += 1;
+            notify(ctx, GENERIC, "del", key);
+        }
+    }
+    Frame::Integer(removed)
 }
 
 /// `UNLINK key [key ...]` — like `DEL`, but the memory of large values is
@@ -79,6 +86,7 @@ pub(crate) fn unlink(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
             if crate::memory::worth_lazy_free(&value) {
                 crate::memory::lazy_free(ctx.server, Box::new(value));
             }
+            notify(ctx, GENERIC, "del", key);
         }
     }
     Frame::Integer(removed)
@@ -133,7 +141,11 @@ fn rename_generic(ctx: &mut Ctx<'_>, args: &[Bytes], only_if_absent: bool) -> Re
     let Some((value, expire_at)) = db.take(src, now) else {
         return Err(Frame::error(ERR_NO_SUCH_KEY));
     };
+    // The destination is replaced, not overwritten: it is a new key.
+    db.remove(dst, now);
     db.set(dst, value, expire_at.map_or(SetTtl::Clear, SetTtl::At), now);
+    notify(ctx, GENERIC, "rename_from", src);
+    notify(ctx, GENERIC, "rename_to", dst);
     Ok(true)
 }
 
@@ -168,6 +180,8 @@ fn move_impl(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Result<Frame, Frame> {
     ctx.keyspace
         .db(dst_db)
         .set(key, value, expire_at.map_or(SetTtl::Clear, SetTtl::At), now);
+    notify(ctx, GENERIC, "move_from", key);
+    notify_in(ctx, dst_db, GENERIC, "move_to", key);
     Ok(Frame::Integer(1))
 }
 
@@ -236,17 +250,25 @@ fn copy_impl(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Result<Frame, Frame> {
     }
 
     let now = ctx.now;
-    let source = ctx.keyspace.db(src_db);
-    let Some(value) = source.get(src, now).cloned() else {
+    // Redis reads the source as `GET` would: a missing one is a `keymiss`.
+    notify::reading(ctx, true);
+    let value = ctx.keyspace.db(src_db).get(src, now).cloned();
+    notify::reading(ctx, false);
+    let Some(value) = value else {
         return Ok(Frame::Integer(0));
     };
-    let expire_at = source.expire_at(src, now).flatten();
+    let expire_at = ctx.keyspace.db(src_db).expire_at(src, now).flatten();
 
     let target = ctx.keyspace.db(dst_db);
-    if !replace && target.exists(dst, now) {
-        return Ok(Frame::Integer(0));
+    if target.exists(dst, now) {
+        if !replace {
+            return Ok(Frame::Integer(0));
+        }
+        // Replaced, not overwritten: the copy is a new key.
+        target.remove(dst, now);
     }
     target.set(dst, value, expire_at.map_or(SetTtl::Clear, SetTtl::At), now);
+    notify_in(ctx, dst_db, GENERIC, "copy_to", dst);
     Ok(Frame::Integer(1))
 }
 
@@ -305,17 +327,22 @@ fn scan_impl(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Result<Frame, Frame> {
 
     let (db, now) = ctx.db();
     let mut found = Vec::new();
+    let mut expired = Vec::new();
     // A sparse table could otherwise make one call walk a huge number of
     // empty buckets; cap the work like Redis does.
     let mut budget = count.saturating_mul(10);
     loop {
         cursor = db.scan(cursor, |key, entry| {
-            let wanted = !entry.is_expired(now)
-                && pattern.is_none_or(|pattern| glob_match(pattern, key))
+            let wanted = pattern.is_none_or(|pattern| glob_match(pattern, key))
                 && type_filter
                     .as_deref()
                     .is_none_or(|wanted| entry.value.type_name() == wanted);
-            if wanted {
+            if !wanted {
+                return;
+            }
+            if entry.is_expired(now) {
+                expired.push(key.clone());
+            } else {
                 found.push(Frame::Bulk(key.clone()));
             }
         });
@@ -323,6 +350,10 @@ fn scan_impl(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Result<Frame, Frame> {
         if cursor == 0 || budget == 0 || found.len() >= count {
             break;
         }
+    }
+    // Expired keys the scan came across are deleted, as in Redis.
+    for key in expired {
+        db.exists(&key, now);
     }
 
     Ok(Frame::Array(vec![
@@ -446,6 +477,7 @@ fn expire_generic(
             crate::aof::command(&[b"PEXPIREAT", key, at.to_string().as_bytes()])
         }]
     });
+    notify(ctx, GENERIC, if deleted { "del" } else { "expire" }, key);
     Ok(Frame::Integer(1))
 }
 
@@ -483,6 +515,7 @@ pub(crate) fn persist(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
     let had_ttl = matches!(db.expire_at(&args[1], now), Some(Some(_)));
     if had_ttl {
         db.set_expire(&args[1], None, now);
+        notify(ctx, GENERIC, "persist", &args[1]);
     }
     Frame::Integer(i64::from(had_ttl))
 }

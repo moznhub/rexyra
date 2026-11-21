@@ -4,9 +4,18 @@ use bytes::Bytes;
 use rexyra_engine::{glob_match, Db, Set, SetTtl, Value};
 use rexyra_resp::Frame;
 
+use crate::notify::{self, notify, GENERIC, SET};
 use crate::{
     int, is, parse_cursor, parse_scan_options, reply, sample_distinct, wrong_type, Ctx, ERR_SYNTAX,
 };
+
+/// Deletes `key` if its set has become empty, and says so.
+fn remove_if_empty(ctx: &mut Ctx<'_>, key: &[u8]) {
+    let (db, now) = ctx.db();
+    if db.remove_if_empty(key, now) {
+        notify(ctx, GENERIC, "del", key);
+    }
+}
 
 fn set_ref<'a>(db: &'a mut Db, key: &[u8], now: u64) -> Result<Option<&'a Set>, Frame> {
     match db.get(key, now) {
@@ -44,6 +53,8 @@ pub(crate) fn sadd(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
         let added = args[2..].iter().filter(|member| set.insert(member)).count();
         if added == 0 {
             db.unchanged(&args[1]);
+        } else {
+            notify(ctx, SET, "sadd", &args[1]);
         }
         Ok(Frame::Integer(added as i64))
     })())
@@ -58,8 +69,10 @@ pub(crate) fn srem(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
         let removed = args[2..].iter().filter(|member| set.remove(member)).count();
         if removed == 0 {
             db.unchanged(&args[1]);
+            return Ok(Frame::Integer(0));
         }
-        db.remove_if_empty(&args[1], now);
+        notify(ctx, SET, "srem", &args[1]);
+        remove_if_empty(ctx, &args[1]);
         Ok(Frame::Integer(removed as i64))
     })())
 }
@@ -113,8 +126,14 @@ pub(crate) fn smove(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
             db.unchanged(source);
             return Ok(Frame::Integer(0));
         }
-        db.remove_if_empty(source, now);
-        set_or_create(db, destination, now)?.insert(member);
+        // As in Redis: the source is reported (and deleted if emptied)
+        // before the destination is created.
+        notify(ctx, SET, "srem", source);
+        remove_if_empty(ctx, source);
+        let (db, now) = ctx.db();
+        if set_or_create(db, destination, now)?.insert(member) {
+            notify(ctx, SET, "sadd", destination);
+        }
         Ok(Frame::Integer(1))
     })())
 }
@@ -150,8 +169,10 @@ pub(crate) fn spop(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
             .collect();
         if popped.is_empty() {
             db.unchanged(&args[1]);
+        } else {
+            notify(ctx, SET, "spop", &args[1]);
+            remove_if_empty(ctx, &args[1]);
         }
-        db.remove_if_empty(&args[1], now);
         // Which members go is random, so the log records the ones that went.
         ctx.log_instead(|| {
             if popped.is_empty() {
@@ -304,13 +325,26 @@ fn algebra(ctx: &mut Ctx<'_>, args: &[Bytes], op: Algebra) -> Frame {
 /// with its size. An empty result deletes the destination.
 fn algebra_store(ctx: &mut Ctx<'_>, args: &[Bytes], op: Algebra) -> Frame {
     reply((|| {
-        let members = combine(ctx, &args[2..], op, 0)?;
+        // The sources are read as `SINTER` reads them: a missing one is a
+        // `keymiss`.
+        notify::reading(ctx, true);
+        let members = combine(ctx, &args[2..], op, 0);
+        notify::reading(ctx, false);
+        let members = members?;
         let (db, now) = ctx.db();
         if members.is_empty() {
-            db.remove(&args[1], now);
+            if db.remove(&args[1], now) {
+                notify(ctx, GENERIC, "del", &args[1]);
+            }
         } else {
             let set: Set = members.iter().map(|member| &member[..]).collect();
             db.set(&args[1], Value::Set(set), SetTtl::Clear, now);
+            let event = match op {
+                Algebra::Inter => "sinterstore",
+                Algebra::Union => "sunionstore",
+                Algebra::Diff => "sdiffstore",
+            };
+            notify(ctx, SET, event, &args[1]);
         }
         Ok(Frame::Integer(members.len() as i64))
     })())

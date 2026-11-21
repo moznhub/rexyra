@@ -48,6 +48,9 @@ pub struct Config {
     pub protected_mode: bool,
     /// Who may run `DEBUG`: `no`, `yes` or `local`.
     pub enable_debug_command: rexyra_commands::DebugCommand,
+    /// The keyspace notifications to publish (`notify-keyspace-events`),
+    /// as `rexyra_commands::notify` flags; none by default.
+    pub notify_keyspace_events: u32,
     /// `user` lines: a name followed by `ACL SETUSER` rules.
     pub users: Vec<Vec<String>>,
     /// The configuration file this was read from, if any.
@@ -85,6 +88,7 @@ impl Default for Config {
             requirepass: String::new(),
             protected_mode: true,
             enable_debug_command: rexyra_commands::DebugCommand::No,
+            notify_keyspace_events: 0,
             users: Vec::new(),
             config_file: None,
             ignored: Vec::new(),
@@ -289,6 +293,17 @@ impl Config {
                 let value = single()?;
                 self.enable_debug_command =
                     rexyra_commands::DebugCommand::parse(value).ok_or_else(|| invalid(value))?;
+            }
+            // Case matters: `K` and `k` are not the same.
+            "notify-keyspace-events" => {
+                let value = single()?;
+                self.notify_keyspace_events = rexyra_commands::notify::parse(value.as_bytes())
+                    .ok_or_else(|| {
+                        format!(
+                            "invalid value '{value}' for '{name}': {}",
+                            rexyra_commands::notify::ERR_INVALID
+                        )
+                    })?;
             }
             "appenddirname" | "appendfilename" => {
                 let value = single()?;
@@ -683,6 +698,23 @@ mod tests {
     }
 
     #[test]
+    fn notify_keyspace_events_is_checked_and_case_sensitive() {
+        let mut config = Config::default();
+        config.apply_file("notify-keyspace-events KEA\n").unwrap();
+        assert_eq!(
+            rexyra_commands::notify::format(config.notify_keyspace_events),
+            "AKE"
+        );
+        config.apply_file("notify-keyspace-events \"\"\n").unwrap();
+        assert_eq!(config.notify_keyspace_events, 0);
+        let error = config
+            .apply_file("notify-keyspace-events kea\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Invalid event class character"), "{error}");
+    }
+
+    #[test]
     fn file_directives() {
         let mut config = Config::default();
         config
@@ -714,6 +746,7 @@ mod tests {
                  tcp-keepalive 300\n\
                  requirepass \"two words\"\n\
                  protected-mode no\n\
+                 notify-keyspace-events \"Elx\"\n\
                  user worker on >pw ~jobs:* +@list\n",
             )
             .unwrap();
@@ -748,6 +781,9 @@ mod tests {
                 requirepass: "two words".to_owned(),
                 protected_mode: false,
                 enable_debug_command: rexyra_commands::DebugCommand::Local,
+                notify_keyspace_events: rexyra_commands::notify::KEYEVENT
+                    | rexyra_commands::notify::LIST
+                    | rexyra_commands::notify::EXPIRED,
                 users: vec![["worker", "on", ">pw", "~jobs:*", "+@list"]
                     .map(str::to_owned)
                     .to_vec()],

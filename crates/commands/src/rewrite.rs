@@ -65,6 +65,7 @@ const SETTINGS: &[(&str, Kind, &str)] = &[
     ("requirepass", Kind::Text, ""),
     ("protected-mode", Kind::Plain, "yes"),
     ("enable-debug-command", Kind::Plain, "no"),
+    ("notify-keyspace-events", Kind::Text, ""),
 ];
 
 /// Older names a file may use for a setting.

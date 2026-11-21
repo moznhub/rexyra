@@ -4,6 +4,7 @@ use bytes::{Bytes, BytesMut};
 use rexyra_engine::{Db, SetTtl, Value};
 use rexyra_resp::{parse_i64, Frame, MAX_BULK_LEN};
 
+use crate::notify::{self, notify, GENERIC, STRING};
 use crate::{int, is, reply, wrong_arity, wrong_type, Ctx, ERR_NOT_INTEGER, ERR_SYNTAX};
 
 const ERR_NOT_FLOAT: &str = "ERR value is not a valid float";
@@ -29,6 +30,15 @@ pub(crate) fn read(ctx: &mut Ctx<'_>, key: &[u8]) -> Result<Option<Bytes>, Frame
         Some(Value::String(s)) => Ok(Some(s.clone())),
         Some(_) => Err(wrong_type()),
     }
+}
+
+/// [`read`] from a command that writes, counted as a read the way Redis
+/// counts it: a missing key is a `keymiss`, as for `GET`.
+pub(crate) fn read_counted(ctx: &mut Ctx<'_>, key: &[u8]) -> Result<Option<Bytes>, Frame> {
+    notify::reading(ctx, true);
+    let value = read(ctx, key);
+    notify::reading(ctx, false);
+    value
 }
 
 /// Like [`read`], but for editing the stored string in place.
@@ -163,7 +173,11 @@ fn set_impl(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Result<Frame, Frame> {
     }
 
     // SET replaces a value of any type, but GET can only return a string.
-    let old = if return_old { read(ctx, key)? } else { None };
+    let old = if return_old {
+        read_counted(ctx, key)?
+    } else {
+        None
+    };
     let (db, now) = ctx.db();
     let exists = db.exists(key, now);
     let allowed = match (nx, xx) {
@@ -187,6 +201,12 @@ fn set_impl(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Result<Frame, Frame> {
             _ => crate::aof::command(&[b"SET", key, value]),
         }]
     });
+    if allowed {
+        notify(ctx, STRING, "set", key);
+        if let Some(SetTtl::At(_)) = ttl {
+            notify(ctx, GENERIC, "expire", key);
+        }
+    }
     Ok(if return_old {
         bulk_or_null(old)
     } else if allowed {
@@ -202,6 +222,7 @@ pub(crate) fn setnx(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
         return Frame::Integer(0);
     }
     db.set(&args[1], owned(&args[2]), SetTtl::Clear, now);
+    notify(ctx, STRING, "set", &args[1]);
     Frame::Integer(1)
 }
 
@@ -229,6 +250,8 @@ fn set_with_expiry(ctx: &mut Ctx<'_>, args: &[Bytes], unit: &[u8], command: &str
                     at.to_string().as_bytes(),
                 ])]
             });
+            notify(ctx, STRING, "set", &args[1]);
+            notify(ctx, GENERIC, "expire", &args[1]);
             Frame::ok()
         }
         Err(e) => e,
@@ -237,19 +260,21 @@ fn set_with_expiry(ctx: &mut Ctx<'_>, args: &[Bytes], unit: &[u8], command: &str
 
 pub(crate) fn getset(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
     reply((|| {
-        let old = read(ctx, &args[1])?;
+        let old = read_counted(ctx, &args[1])?;
         let (db, now) = ctx.db();
         db.set(&args[1], owned(&args[2]), SetTtl::Clear, now);
+        notify(ctx, STRING, "set", &args[1]);
         Ok(bulk_or_null(old))
     })())
 }
 
 pub(crate) fn getdel(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
     reply((|| {
-        let value = read(ctx, &args[1])?;
+        let value = read_counted(ctx, &args[1])?;
         if value.is_some() {
             let (db, now) = ctx.db();
             db.remove(&args[1], now);
+            notify(ctx, GENERIC, "del", &args[1]);
         }
         Ok(bulk_or_null(value))
     })())
@@ -269,20 +294,38 @@ pub(crate) fn getex(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
         };
         // Only a change of TTL is worth logging, and as an absolute time.
         ctx.log_instead(Vec::new);
-        let Some(value) = read(ctx, &args[1])? else {
+        let Some(value) = read_counted(ctx, &args[1])? else {
             return Ok(Frame::Null);
         };
-        if let Some(expire_at) = change {
-            let (db, now) = ctx.db();
-            db.set_expire(&args[1], expire_at, now);
-            ctx.log_instead(|| {
-                vec![match expire_at {
-                    Some(at) => {
-                        crate::aof::command(&[b"PEXPIREAT", &args[1], at.to_string().as_bytes()])
-                    }
-                    None => crate::aof::command(&[b"PERSIST", &args[1]]),
-                }]
-            });
+        let key = &args[1];
+        let (db, now) = ctx.db();
+        match change {
+            None => {}
+            // A time that has already passed (only `EXAT` and `PXAT` can
+            // give one) deletes the key, as in Redis.
+            Some(Some(at)) if at <= now => {
+                db.remove(key, now);
+                ctx.log_instead(|| vec![crate::aof::command(&[b"DEL", key])]);
+                notify(ctx, GENERIC, "del", key);
+            }
+            Some(Some(at)) => {
+                db.set_expire(key, Some(at), now);
+                ctx.log_instead(|| {
+                    vec![crate::aof::command(&[
+                        b"PEXPIREAT",
+                        key,
+                        at.to_string().as_bytes(),
+                    ])]
+                });
+                notify(ctx, GENERIC, "expire", key);
+            }
+            // Only a TTL that was there is removed, and reported.
+            Some(None) if db.expire_at(key, now).flatten().is_some() => {
+                db.set_expire(key, None, now);
+                ctx.log_instead(|| vec![crate::aof::command(&[b"PERSIST", key])]);
+                notify(ctx, GENERIC, "persist", key);
+            }
+            Some(None) => {}
         }
         Ok(Frame::Bulk(value))
     })())
@@ -299,9 +342,10 @@ pub(crate) fn mset(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
     if args.len().is_multiple_of(2) {
         return wrong_arity("mset");
     }
-    let (db, now) = ctx.db();
     for [key, value] in pairs(args) {
+        let (db, now) = ctx.db();
         db.set(key, owned(value), SetTtl::Clear, now);
+        notify(ctx, STRING, "set", key);
     }
     Frame::ok()
 }
@@ -316,7 +360,9 @@ pub(crate) fn msetnx(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
         return Frame::Integer(0);
     }
     for [key, value] in pairs(args) {
+        let (db, now) = ctx.db();
         db.set(key, owned(value), SetTtl::Clear, now);
+        notify(ctx, STRING, "set", key);
     }
     Frame::Integer(1)
 }
@@ -338,6 +384,7 @@ fn incr_by(ctx: &mut Ctx<'_>, key: &[u8], delta: i64) -> Result<Frame, Frame> {
         SetTtl::Keep,
         now,
     );
+    notify(ctx, STRING, "incrby", key);
     Ok(Frame::Integer(updated))
 }
 
@@ -389,6 +436,7 @@ pub(crate) fn incrbyfloat(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
         db.set(&args[1], Value::String(text.clone()), SetTtl::Keep, now);
         // Logged as its result: another server might round differently.
         ctx.log_instead(|| vec![crate::aof::command(&[b"SET", &args[1], &text, b"KEEPTTL"])]);
+        notify(ctx, STRING, "incrbyfloat", &args[1]);
         Ok(Frame::Bulk(text))
     })())
 }
@@ -416,7 +464,7 @@ pub(crate) fn append(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
     reply((|| {
         let (key, suffix) = (&args[1], &args[2]);
         let (db, now) = ctx.db();
-        match string_mut(db, key, now)? {
+        let length = match string_mut(db, key, now)? {
             Some(stored) => {
                 if stored.len() + suffix.len() > MAX_BULK_LEN {
                     return Err(Frame::error(ERR_TOO_LONG));
@@ -424,13 +472,15 @@ pub(crate) fn append(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
                 let mut buf = editable(stored, suffix.len());
                 buf.extend_from_slice(suffix);
                 *stored = buf.freeze();
-                Ok(Frame::Integer(stored.len() as i64))
+                stored.len()
             }
             None => {
                 db.set(key, owned(suffix), SetTtl::Clear, now);
-                Ok(Frame::Integer(suffix.len() as i64))
+                suffix.len()
             }
-        }
+        };
+        notify(ctx, STRING, "append", key);
+        Ok(Frame::Integer(length as i64))
     })())
 }
 
@@ -457,7 +507,7 @@ pub(crate) fn setrange(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
         }
         let (offset, end) = (offset as usize, offset as usize + patch.len());
 
-        match existing {
+        let length = match existing {
             Some(stored) => {
                 let mut buf = editable(stored, end.saturating_sub(stored.len()));
                 if buf.len() < end {
@@ -465,15 +515,17 @@ pub(crate) fn setrange(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
                 }
                 buf[offset..end].copy_from_slice(patch);
                 *stored = buf.freeze();
-                Ok(Frame::Integer(stored.len() as i64))
+                stored.len()
             }
             None => {
                 let mut buf = BytesMut::zeroed(end);
                 buf[offset..].copy_from_slice(patch);
                 db.set(key, Value::String(buf.freeze()), SetTtl::Clear, now);
-                Ok(Frame::Integer(end as i64))
+                end
             }
-        }
+        };
+        notify(ctx, STRING, "setrange", key);
+        Ok(Frame::Integer(length as i64))
     })())
 }
 

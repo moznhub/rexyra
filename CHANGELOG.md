@@ -8,6 +8,14 @@ All notable changes to Rexyra are recorded here. The format follows [Keep a Chan
 
 - `MOVE`, `SWAPDB` and `COMMAND GETKEYS`, which redis-py, Jedis and go-redis call. `SWAPDB` during a background save waits until the save has read the data, so the snapshot still has each database as it was.
 - Tests with the redis-py (8.1 and 5.3), Jedis (8.0 and 7.5), Lettuce (7.9 and 6.9) and go-redis (9.23 and 9.7) client libraries, run in CI: [clients/README.md](https://github.com/moznhub/rexyra/blob/main/clients/README.md).
+- **Keyspace notifications** (`notify-keyspace-events`, in the configuration file, on the command line or with `CONFIG SET`, and kept by `CONFIG REWRITE`). Every command raises the events Redis 7.4 raises, with the same names and in the same order, including `expired`, `evicted`, `keymiss` (`m`) and `new` (`n`), inside transactions, scripts and functions and when a blocked client is served. Compared with Redis by a new tool, `tools/rexyra-keyevents`. Off, the default, it costs nothing measurable.
+- `DEBUG SET-ACTIVE-EXPIRE 0|1`, as in Redis, to stop the periodic deletion of expired keys in tests.
+- `rexyra-bench ops`, the throughput and latency of `SET`, `GET` and `LPUSH` on their own.
+
+### Fixed
+
+- `SCAN` deletes the expired keys it comes across, as Redis does, instead of only leaving them out.
+- `GETEX` with an `EXAT` or `PXAT` time already past deletes the key at once, as Redis does, and logs a `DEL`.
 
 ## [0.3.0] - 2026-11-21
 

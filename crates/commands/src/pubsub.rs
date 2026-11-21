@@ -66,6 +66,17 @@ impl PubSub {
     pub fn shard_channel_count(&self) -> usize {
         self.shard.len()
     }
+
+    /// Whether anyone is subscribed to a channel or a pattern, so that
+    /// `PUBLISH` could reach them.
+    pub(crate) fn has_subscribers(&self) -> bool {
+        !(self.channels.is_empty() && self.patterns.is_empty())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn add_pattern_subscriber(&mut self, pattern: &Bytes, id: u64) {
+        Kind::Pattern.register(self, pattern, id, true);
+    }
 }
 
 /// The three kinds of subscription.
