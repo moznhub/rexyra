@@ -4,6 +4,10 @@ All notable changes to Rexyra are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-21
+
+Rexyra is now tested with five client libraries (StackExchange.Redis, redis-py, Jedis, Lettuce and go-redis), and has what they turned up: expiry of single hash fields as in Redis 7.4, keyspace notifications, and `MOVE`, `SWAPDB` and `COMMAND GETKEYS`.
+
 ### Added
 
 - **Expiry of single hash fields** (Redis 7.4): `HEXPIRE`, `HPEXPIRE`, `HEXPIREAT`, `HPEXPIREAT`, `HTTL`, `HPTTL`, `HEXPIRETIME`, `HPEXPIRETIME` and `HPERSIST`, with Redis's replies, errors and conditions (`NX`, `XX`, `GT`, `LT`). Expired fields disappear from every hash command and are reclaimed in the background like keys; a hash whose last field expires is deleted. Field TTLs are kept by `RENAME`, `COPY`, `MOVE`, `SWAPDB`, `DUMP`/`RESTORE`, snapshots (in Redis 7.4's RDB format, which Redis reads and writes) and the append-only file. `INFO` reports `subexpiry` and `expired_subkeys`, and `OBJECT ENCODING` `listpackex`.
@@ -13,14 +17,16 @@ All notable changes to Rexyra are recorded here. The format follows [Keep a Chan
 - `DEBUG SET-ACTIVE-EXPIRE 0|1`, as in Redis, to stop the periodic deletion of expired keys in tests.
 - `rexyra-bench ops`, the throughput and latency of `SET`, `GET` and `LPUSH` on their own.
 
+
+### Changed
+
+- `SORT ... STORE` with `BY` or `GET` is written to the append-only file as the list it stored, so that a replay gives the same list even if a key or hash field it read had passed its TTL without having been removed yet.
+
 ### Fixed
 
 - `SCAN` deletes the expired keys it comes across, as Redis does, instead of only leaving them out.
 - `GETEX` with an `EXAT` or `PXAT` time already past deletes the key at once, as Redis does, and logs a `DEL`.
 
-### Changed
-
-- `SORT ... STORE` with `BY` or `GET` is written to the append-only file as the list it stored, so that a replay gives the same list even if a key or hash field it read had passed its TTL without having been removed yet.
 
 ## [0.3.0] - 2026-11-21
 
@@ -87,7 +93,8 @@ The first public release: a Redis-compatible in-memory data server for Windows, 
 - Users created with `ACL SETUSER` are not saved across restarts; put them in the configuration file.
 - Everything known to differ from Redis is listed in [docs/COMPATIBILITY.md](https://github.com/moznhub/rexyra/blob/main/docs/COMPATIBILITY.md), and what is not done in [docs/ROADMAP.md](https://github.com/moznhub/rexyra/blob/main/docs/ROADMAP.md).
 
-[Unreleased]: https://github.com/moznhub/rexyra/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/moznhub/rexyra/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/moznhub/rexyra/releases/tag/v0.4.0
 [0.3.0]: https://github.com/moznhub/rexyra/releases/tag/v0.3.0
 [0.2.0]: https://github.com/moznhub/rexyra/releases/tag/v0.2.0
 [0.1.0]: https://github.com/moznhub/rexyra/releases/tag/v0.1.0

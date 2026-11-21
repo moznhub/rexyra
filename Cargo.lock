@@ -468,7 +468,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "rexyra-bench"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -476,7 +476,7 @@ dependencies = [
 
 [[package]]
 name = "rexyra-commands"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "getrandom",
@@ -490,7 +490,7 @@ dependencies = [
 
 [[package]]
 name = "rexyra-engine"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "proptest",
@@ -498,7 +498,7 @@ dependencies = [
 
 [[package]]
 name = "rexyra-fanout"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde_json",
  "tokio",
@@ -506,11 +506,11 @@ dependencies = [
 
 [[package]]
 name = "rexyra-keyevents"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "rexyra-persist"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "proptest",
@@ -519,7 +519,7 @@ dependencies = [
 
 [[package]]
 name = "rexyra-resp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "itoa",
@@ -528,7 +528,7 @@ dependencies = [
 
 [[package]]
 name = "rexyra-server"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "cap",
@@ -543,7 +543,7 @@ dependencies = [
 
 [[package]]
 name = "rexyra-soak"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde_json",
 ]
