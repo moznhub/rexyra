@@ -24,6 +24,10 @@ pub struct Config {
     pub dbfilename: String,
     /// The file the log is written to; empty for standard error.
     pub logfile: String,
+    /// The size at which the log file is rolled (zero: never), and how many
+    /// earlier files are kept; see [`crate::logfile`].
+    pub logfile_max_size: u64,
+    pub logfile_max_files: u32,
     /// The append-only file; see [`AofSettings`].
     pub aof: AofSettings,
     /// Automatic saves as `(seconds, changes)` pairs; see `save` in Redis.
@@ -68,6 +72,8 @@ impl Default for Config {
             dir: ".".to_owned(),
             dbfilename: "dump.rdb".to_owned(),
             logfile: String::new(),
+            logfile_max_size: 100 * 1024 * 1024,
+            logfile_max_files: 5,
             aof: AofSettings::default(),
             save_points: vec![(3600, 1), (300, 100), (60, 10_000)],
             save_given: false,
@@ -146,6 +152,10 @@ Options:
   --dir <PATH>                      Directory of the snapshot     [default: .]
   --dbfilename <NAME>               File name of the snapshot     [default: dump.rdb]
   --logfile <PATH>                  File the log is written to    [default: standard error]
+  --logfile-max-size <BYTES>        Size at which the log file is
+                                    started afresh, the old one kept
+                                    as NAME.1.log; 0 = never      [default: 100mb]
+  --logfile-max-files <N>           Earlier log files kept        [default: 5]
   --service                         Run under the Windows service manager. For
                                     a service's command line, not a terminal
   --create-config <PATH>            Write a configuration file holding the
@@ -328,6 +338,19 @@ impl Config {
             }
             "dir" => self.dir = single()?.to_owned(),
             "logfile" => self.logfile = single()?.to_owned(),
+            "logfile-max-size" => {
+                let value = single()?;
+                self.logfile_max_size =
+                    rexyra_commands::aof::parse_size(value).ok_or_else(|| invalid(value))?;
+            }
+            "logfile-max-files" => {
+                let value = single()?;
+                self.logfile_max_files = value
+                    .parse()
+                    .ok()
+                    .filter(|&n| n <= 1000)
+                    .ok_or_else(|| invalid(value))?;
+            }
             "dbfilename" => {
                 let value = single()?;
                 if value.contains(['/', '\\']) {
@@ -476,6 +499,23 @@ impl Config {
         }
         text.push_str(
             "\n\
+             # When the log file reaches this size it is renamed rexyra.1.log (the one\n\
+             # before becomes rexyra.2.log, and so on) and a new one is started. This\n\
+             # many earlier files are kept. A size of 0 lets the file grow for ever.\n",
+        );
+        let defaults = Config::default();
+        if (self.logfile_max_size, self.logfile_max_files)
+            == (defaults.logfile_max_size, defaults.logfile_max_files)
+        {
+            text.push_str("# logfile-max-size 100mb\n# logfile-max-files 5\n");
+        } else {
+            text.push_str(&format!(
+                "logfile-max-size {}\nlogfile-max-files {}\n",
+                self.logfile_max_size, self.logfile_max_files
+            ));
+        }
+        text.push_str(
+            "\n\
              # Besides the snapshots, log every change to an append-only file, so that\n\
              # a crash or a power cut loses at most about a second of changes.\n",
         );
@@ -576,6 +616,8 @@ mod tests {
             Config {
                 dir: "D:\\My Data\\rexyra".to_owned(),
                 logfile: "D:\\Bob's \"logs\"\\rexyra.log".to_owned(),
+                logfile_max_size: 0,
+                logfile_max_files: 20,
                 requirepass: "#not a comment".to_owned(),
                 maxmemory: 2 << 30,
                 maxmemory_policy: Policy::AllKeysLru,
@@ -656,6 +698,9 @@ mod tests {
         assert!(Config::from_args(["--databases", "0"]).is_err());
         assert!(Config::from_args(["--slowlog-max-len", "-1"]).is_err());
         assert!(Config::from_args(["no-such-file.conf"]).is_err());
+        assert!(Config::from_args(["--logfile-max-size", "big"]).is_err());
+        assert!(Config::from_args(["--logfile-max-files", "-1"]).is_err());
+        assert!(Config::from_args(["--logfile-max-files", "1001"]).is_err());
     }
 
     #[test]
@@ -675,6 +720,8 @@ mod tests {
                  dir \"data dir\"\n\
                  dbfilename snap.rdb\n\
                  logfile C:\\logs\\rexyra.log\n\
+                 logfile-max-size 10mb\n\
+                 logfile-max-files 3\n\
                  save 900 1\n\
                  save 30 5\n\
                  enable-debug-command local\n\
@@ -704,6 +751,8 @@ mod tests {
                 dir: "data dir".to_owned(),
                 dbfilename: "snap.rdb".to_owned(),
                 logfile: r"C:\logs\rexyra.log".to_owned(),
+                logfile_max_size: 10 * 1024 * 1024,
+                logfile_max_files: 3,
                 aof: AofSettings {
                     enabled: true,
                     fsync: Fsync::Always,

@@ -66,6 +66,7 @@ rexyra-server.exe rexyra.conf --port 7000
 | `--protected-mode` | Without a password, accept only local connections | `yes` |
 | `--dir`, `--dbfilename` | Where the snapshot is kept | `.`, `dump.rdb` |
 | `--logfile` | File the log is written to | standard error |
+| `--logfile-max-size`, `--logfile-max-files` | Size at which the log file is started afresh, and how many earlier ones (`rexyra.1.log`, ...) are kept; `0` never rolls it | `100mb`, `5` |
 | `--save` | Automatic snapshots, as `seconds changes` pairs | `3600 1 300 100 60 10000` |
 | `--appendonly`, `--appendfsync` | The append-only file and when it is forced to disk | `no`, `everysec` |
 | `--maxmemory`, `--maxmemory-policy` | Memory limit and what to evict at the limit | none, `noeviction` |
@@ -82,7 +83,7 @@ The installer (`.msi`) sets this up for you: it puts the program in the folder y
 | `C:\Program Files\Rexyra\` | The program |
 | `C:\ProgramData\Rexyra\rexyra.conf` | The settings; edit and restart the service to change them |
 | `C:\ProgramData\Rexyra\data\` | The data files |
-| `C:\ProgramData\Rexyra\logs\rexyra.log` | The log |
+| `C:\ProgramData\Rexyra\logs\rexyra.log` | The log, with up to five earlier files of 100 MB each beside it |
 
 For a scripted install:
 
