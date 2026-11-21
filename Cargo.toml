@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/resp", "crates/engine", "crates/persist", "crates/commands", "crates/server", "tools/rexyra-bench"]
+members = ["crates/resp", "crates/engine", "crates/persist", "crates/commands", "crates/server", "tools/rexyra-bench", "tools/rexyra-fanout"]
 exclude = ["fuzz"]
 
 [workspace.package]

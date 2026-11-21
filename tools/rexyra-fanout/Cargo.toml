@@ -1,0 +1,15 @@
+[package]
+name = "rexyra-fanout"
+description = "Pub/Sub fan-out benchmark: one publisher, many subscribers, and the latency of ordinary commands meanwhile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+serde_json = "1"
+tokio = { workspace = true }
+
+[lints]
+workspace = true
