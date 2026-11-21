@@ -89,5 +89,3 @@ Over six hours and nearly 5 billion checked operations:
 - every reply was correct;
 - every key survived 180 snapshots, 2,509 rewrites and a restart;
 - memory, handles and threads stayed level.
-
-Still open: the cause of the occasional single command over 100 ms, to be measured on a machine doing nothing else.
