@@ -5,7 +5,7 @@
 
 A Redis-compatible in-memory data server for Windows, written in Rust.
 
-Rexyra speaks the Redis protocol (RESP2 and RESP3) and implements 189 Redis commands, so existing Redis tools and client libraries can talk to it. It runs as a single native Windows executable: no WSL, no Docker, no runtime to install.
+Rexyra speaks the Redis protocol (RESP2 and RESP3) and implements 190 Redis commands, so existing Redis tools and client libraries can talk to it. It runs as a single native Windows executable: no WSL, no Docker, no runtime to install.
 
 ## Highlights
 
@@ -97,7 +97,7 @@ msiexec /i rexyra-vX.Y.Z-windows-x86_64.msi /qn PORT=6380 INSTALLFOLDER="D:\Rexy
 | Group | Commands |
 |-------|----------|
 | Connection | `PING` `ECHO` `HELLO` `AUTH` `SELECT` `QUIT` `RESET` `CLIENT` (`ID`, `GETNAME`, `SETNAME`, `SETINFO`, `LIST`, `INFO`, `KILL`, `UNBLOCK`, `NO-EVICT`, `NO-TOUCH`) |
-| Server | `COMMAND` (`COUNT`, `LIST`, `INFO`, `DOCS`) `DBSIZE` `FLUSHDB` `FLUSHALL` `INFO` `CONFIG` (`GET`, `SET`, `RESETSTAT`) `SLOWLOG` (`GET`, `LEN`, `RESET`) `MEMORY` (`USAGE`) `ACL` (`SETUSER`, `GETUSER`, `DELUSER`, `LIST`, `USERS`, `WHOAMI`, `CAT`, `GENPASS`, `DRYRUN`) `TIME` `SAVE` `LASTSAVE` `SHUTDOWN` `BGSAVE` `BGREWRITEAOF` |
+| Server | `COMMAND` (`COUNT`, `LIST`, `INFO`, `DOCS`) `DBSIZE` `FLUSHDB` `FLUSHALL` `INFO` `CONFIG` (`GET`, `SET`, `RESETSTAT`) `SLOWLOG` (`GET`, `LEN`, `RESET`) `MEMORY` (`USAGE`) `ACL` (`SETUSER`, `GETUSER`, `DELUSER`, `LIST`, `USERS`, `WHOAMI`, `CAT`, `GENPASS`, `DRYRUN`) `TIME` `SAVE` `LASTSAVE` `SHUTDOWN` `BGSAVE` `BGREWRITEAOF` `DEBUG` (`PANIC`) |
 | Pub/Sub | `SUBSCRIBE` `UNSUBSCRIBE` `PSUBSCRIBE` `PUNSUBSCRIBE` `SSUBSCRIBE` `SUNSUBSCRIBE` `PUBLISH` `SPUBLISH` `PUBSUB` (`CHANNELS`, `NUMSUB`, `NUMPAT`, `SHARDCHANNELS`, `SHARDNUMSUB`, `HELP`) |
 | Transactions | `MULTI` `EXEC` `DISCARD` `WATCH` `UNWATCH` |
 | Scripting | `EVAL` `EVALSHA` `EVAL_RO` `EVALSHA_RO` `SCRIPT` (`LOAD`, `EXISTS`, `FLUSH`, `KILL`) `FCALL` `FCALL_RO` `FUNCTION` (`LOAD`, `DELETE`, `FLUSH`, `LIST`, `STATS`, `KILL`, `DUMP`, `RESTORE`) |

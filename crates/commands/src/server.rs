@@ -78,6 +78,8 @@ pub struct Server {
     pub protected_mode: bool,
     /// Whether that is the case right now. Shared with the accept loop.
     pub loopback_only: Arc<std::sync::atomic::AtomicBool>,
+    /// Who may run `DEBUG`; fixed at start-up, as in Redis.
+    pub enable_debug_command: crate::DebugCommand,
 
     // --- identity -----------------------------------------------------------
     /// Milliseconds since the Unix epoch at start-up.
@@ -169,6 +171,7 @@ impl Default for Server {
             requirepass: String::new(),
             protected_mode: true,
             loopback_only: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            enable_debug_command: crate::DebugCommand::No,
             started_at: 0,
             run_id: new_run_id(),
             stats: Stats::default(),

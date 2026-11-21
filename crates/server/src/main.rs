@@ -12,7 +12,32 @@ use tracing::{error, info, warn};
 #[cfg(windows)]
 mod service;
 
+/// Exit code after an internal error (a panic), on any thread. Exiting
+/// without telling the service manager the service has stopped counts as a
+/// crash, so a service set to restart on failure (as the installer sets it)
+/// is started again, from the data on disk.
+const EXIT_INTERNAL_ERROR: i32 = 70;
+
+/// Makes any panic end the process, as an internal error does in Redis. A
+/// panic means the server's state can no longer be trusted: carrying on
+/// with the thread that failed gone would leave a server that accepts
+/// connections but cannot run commands, or that quietly stops syncing its
+/// append-only file.
+fn exit_on_panic() {
+    let print = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        error!(
+            thread = thread.name().unwrap_or("unnamed"),
+            "internal error, stopping so that the server can be restarted: {info}"
+        );
+        print(info);
+        std::process::exit(EXIT_INTERNAL_ERROR);
+    }));
+}
+
 fn main() -> ExitCode {
+    exit_on_panic();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let as_service = args.iter().any(|arg| arg == "--service");
     let parsed = Config::from_args(&args);

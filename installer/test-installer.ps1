@@ -150,6 +150,30 @@ try {
     Check 'the server answers on its port' (Wait-ForServer)
     Check 'with its data' ((Send-Commands 'GET installer:check') -eq 'kept')
 
+    Write-Host '== an internal error restarts the service'
+    # DEBUG PANIC fails the way a bug would; it has to be allowed first.
+    $original = Get-Content $config -Raw
+    Add-Content $config "`nenable-debug-command local"
+    Restart-Service Rexyra
+    Check 'the server answers with DEBUG allowed' (Wait-ForServer)
+    $before = (Get-CimInstance Win32_Service -Filter "Name='Rexyra'").ProcessId
+    try { Send-Commands 'DEBUG PANIC' | Out-Null } catch { }
+    $after = $null
+    foreach ($attempt in 1..60) {
+        Start-Sleep -Seconds 1
+        $service = Get-CimInstance Win32_Service -Filter "Name='Rexyra'"
+        if ($service.State -eq 'Running' -and $service.ProcessId -ne $before -and $service.ProcessId -ne 0) {
+            $after = $service.ProcessId
+            break
+        }
+    }
+    Check 'the service manager started it again' ($null -ne $after) "process $before, now $($service.State) $($service.ProcessId)"
+    Check 'it answers again' (Wait-ForServer)
+    Check 'with its data' ((Send-Commands 'GET installer:check') -eq 'kept')
+    Check 'the log says why it stopped' ((Get-Content (Join-Path $dataFolder 'logs\rexyra.log') -Raw) -match 'internal error, stopping so that the server can be restarted')
+    Set-Content $config $original -NoNewline
+    Restart-Service Rexyra
+
     Write-Host '== uninstall'
     Invoke-Msi @('/x', "`"$Msi`"") 'uninstall.log'
     Check 'the service is gone' ($null -eq (Get-CimInstance Win32_Service -Filter "Name='Rexyra'"))

@@ -42,6 +42,8 @@ pub struct Config {
     pub requirepass: String,
     /// Refuse connections from other machines while no password is set.
     pub protected_mode: bool,
+    /// Who may run `DEBUG`: `no`, `yes` or `local`.
+    pub enable_debug_command: rexyra_commands::DebugCommand,
     /// `user` lines: a name followed by `ACL SETUSER` rules.
     pub users: Vec<Vec<String>>,
     /// The configuration file this was read from, if any.
@@ -76,6 +78,7 @@ impl Default for Config {
             lfu_decay_time: 1,
             requirepass: String::new(),
             protected_mode: true,
+            enable_debug_command: rexyra_commands::DebugCommand::No,
             users: Vec::new(),
             config_file: None,
             ignored: Vec::new(),
@@ -131,6 +134,9 @@ Options:
                                     AUTH                          [default: none]
   --protected-mode <yes|no>         Without a password, accept only
                                     connections from this machine [default: yes]
+  --enable-debug-command <no|yes|local>
+                                    Who may run DEBUG; local = clients
+                                    on this machine               [default: no]
   --maxmemory <BYTES>               Memory limit, e.g. 512mb;
                                     0 = none                      [default: 0]
   --maxmemory-policy <POLICY>       What to evict at the limit: noeviction,
@@ -268,6 +274,11 @@ impl Config {
             "appendfsync" => {
                 let value = single()?;
                 self.aof.fsync = Fsync::parse(value).ok_or_else(|| invalid(value))?;
+            }
+            "enable-debug-command" => {
+                let value = single()?;
+                self.enable_debug_command =
+                    rexyra_commands::DebugCommand::parse(value).ok_or_else(|| invalid(value))?;
             }
             "appenddirname" | "appendfilename" => {
                 let value = single()?;
@@ -666,6 +677,7 @@ mod tests {
                  logfile C:\\logs\\rexyra.log\n\
                  save 900 1\n\
                  save 30 5\n\
+                 enable-debug-command local\n\
                  appendonly yes\n\
                  appendfsync always\n\
                  auto-aof-rewrite-min-size 1mb\n\
@@ -707,6 +719,7 @@ mod tests {
                 lfu_decay_time: 3,
                 requirepass: "two words".to_owned(),
                 protected_mode: false,
+                enable_debug_command: rexyra_commands::DebugCommand::Local,
                 users: vec![["worker", "on", ">pw", "~jobs:*", "+@list"]
                     .map(str::to_owned)
                     .to_vec()],

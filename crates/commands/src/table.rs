@@ -205,6 +205,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     cmd("publish", 3, PUBSUB_PUBLISH, NO_KEYS, "pubsub", "2.0.0", "Posts a message to a channel.", pubsub::publish),
     cmd("spublish", 3, PUBSUB_PUBLISH, NO_KEYS, "pubsub", "7.0.0", "Post a message to a shard channel", pubsub::spublish),
     cmd("pubsub", -2, &[], NO_KEYS, "pubsub", "2.8.0", "A container for Pub/Sub commands.", pubsub::pubsub),
+    cmd("debug", -2, &["admin", "noscript", "loading", "stale"], NO_KEYS, "server", "1.0.0", "A container for debugging commands.", admin::debug),
     cmd("reset", 1, &["noscript", "loading", "stale", "fast", "no_auth", "allow_busy"], NO_KEYS, "connection", "6.2.0", "Resets the connection.", clients::reset),
 
     // --- persistence ------------------------------------------------------

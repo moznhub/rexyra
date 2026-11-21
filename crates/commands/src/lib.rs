@@ -41,6 +41,7 @@ use bytes::Bytes;
 use rexyra_engine::{Db, Keyspace};
 use rexyra_resp::{parse_i64, Frame, Protocol};
 
+pub use admin::DebugCommand;
 pub use memory::{MemoryMeter, Policy};
 pub use scripting::Scripting;
 pub use server::{BusyPoll, CommandStat, Effect, Server, SlowEntry, Stats};

@@ -77,6 +77,8 @@ INFO saved snapshot before exit
 
 Rexyra keeps telling Windows that it is still saving, so a large data set is not cut off by a stop, and at shutdown Windows waits for it for up to three minutes by default. A power cut or a crash gives no such chance: what changed since the last snapshot is then lost unless the append-only file is on. For data that matters, set `appendonly yes` in `rexyra.conf`; every change is then written to disk within about a second.
 
+**After an internal error.** If Rexyra hits an internal error (a bug), it writes `internal error, stopping so that the server can be restarted` and the details to its log and exits with code 70. The installer sets the service to be restarted after a failure, five seconds later, so it comes back by itself with the data from disk. The installer's test on the build machine checks this with `DEBUG PANIC`.
+
 ## Other machines
 
 Out of the box Rexyra listens on `127.0.0.1` only. To accept connections from other machines:
