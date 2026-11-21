@@ -20,7 +20,7 @@ Rexyra speaks the Redis protocol (RESP2 and RESP3) and implements 180 Redis comm
 
 Pre-release. Rexyra passes its own test suite of about 480 tests and has been exercised with `redis-cli` and `redis-benchmark`; it has not been used in production. Of the client libraries, StackExchange.Redis is tested in CI (see [clients](clients/README.md)); the others have not been tested systematically yet.
 
-It is a **single-instance** server: replication, cluster mode, Pub/Sub, streams, modules and TLS are not implemented. See [what differs from Redis](docs/COMPATIBILITY.md) and the [roadmap](docs/ROADMAP.md).
+It is a **single-instance** server: replication, cluster mode, streams, modules and TLS are not implemented. See [what differs from Redis](docs/COMPATIBILITY.md) and the [roadmap](docs/ROADMAP.md).
 
 ## Quick start
 
@@ -113,7 +113,7 @@ msiexec /i rexyra-vX.Y.Z-windows-x86_64.msi /qn PORT=6380 INSTALLFOLDER="D:\Rexy
 
 For the commands above, Rexyra is meant to be indistinguishable from Redis 7.x to a client. Where it is not, the difference is listed in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md), together with the details of persistence, the memory limit and access control. A few to know about up front:
 
-- No replication, cluster mode, Pub/Sub, streams or TLS.
+- No replication, cluster mode, streams or TLS.
 - Users created with `ACL SETUSER` are not saved; put the ones that must survive a restart in the configuration file.
 - `SCAN` cursors are valid but not numerically the same as Redis's.
 - Snapshots and append-only files written by Redis older than 7.0, or containing streams or module data, are refused with a message saying why.

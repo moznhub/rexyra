@@ -213,7 +213,7 @@ public sealed class ConnectionTests(ServerFixture server, ITestOutputHelper outp
         Assert.True(srv.IsConnected);
     }
 
-    [Fact(Skip = "Pub/Sub is not implemented yet; planned for 0.3.0")]
+    [Fact]
     public async Task PubSub()
     {
         using var conn = server.Connect();

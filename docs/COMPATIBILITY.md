@@ -6,7 +6,7 @@ If you find a difference that is not listed here, please [report it](../CONTRIBU
 
 ## Not implemented
 
-Rexyra is a single-instance server. Replication, Sentinel, cluster mode, Pub/Sub, streams, HyperLogLog, geospatial commands, modules and TLS are not implemented. See the [roadmap](ROADMAP.md).
+Rexyra is a single-instance server. Replication, Sentinel, cluster mode, streams, HyperLogLog, geospatial commands, modules and TLS are not implemented. See the [roadmap](ROADMAP.md).
 
 ## Known differences
 
@@ -22,8 +22,7 @@ Rexyra is a single-instance server. Replication, Sentinel, cluster mode, Pub/Sub
 - `SORT` weights do not accept hexadecimal numbers. With `BY ... ALPHA`, elements whose `BY` values are equal keep their original relative order; Redis leaves that order unspecified.
 - `INFO` reports the sections and fields this server has real figures for. `used_memory` is what the process has allocated, counted by the allocator (the Lua interpreter's own memory is not included); `used_memory_rss` is what the operating system reports. `avg_ttl` is always 0; there are no CPU or hit/miss figures yet.
 - `CONFIG SET` changes `maxclients`, `slowlog-log-slower-than`, `slowlog-max-len`, `save`, `appendonly`, `appendfsync`, `auto-aof-rewrite-percentage`, `auto-aof-rewrite-min-size`, `maxmemory`, `maxmemory-policy`, `maxmemory-samples`, `lfu-log-factor`, `lfu-decay-time`, `requirepass`, `protected-mode`, `rdb-key-save-delay` (a test aid: microseconds the background save's writer pauses per key, to stand in for a slow disk) and `busy-reply-threshold` (also as `lua-time-limit`). Other parameters `CONFIG GET` lists describe fixed behaviour and cannot be set; parameters it does not list are not implemented.
-- StackExchange.Redis subscribes its second connection to its `__Booksleeve_MasterChanged` channel when it connects. Without Pub/Sub that `SUBSCRIBE` fails; the library carries on and everything else works, but it does not hear of configuration changes through that channel. Calls to its subscriber (`GetSubscriber()`) fail with `ERR unknown command`. See [clients](../clients/README.md).
-- `CLIENT LIST` and `CLIENT INFO` report socket and buffer sizes (`fd`, `qbuf`, `omem`, ...) as 0.
+- `CLIENT LIST` and `CLIENT INFO` report socket and input buffer sizes (`fd`, `qbuf`, `argv-mem`, ...) as 0. `omem` (and `tot-mem`) is the output handed to the connection and not yet written to its socket.
 - `MEMORY USAGE` is an estimate from the lengths of keys and values, not an allocator measurement.
 - A configuration file may contain directives this server does not support; they are skipped with a warning at start-up instead of stopping the server.
 - Scripts run on real Lua 5.1. The `cjson`, `cmsgpack`, `struct` and `bit` libraries are reimplemented in Rust to behave like the originals; `cjson.encode` of a decoded `-0` gives `0` where Redis gives `-0`, and `cjson`'s tuning functions (`encode_sparse_array` and the like) are not provided.
@@ -47,6 +46,14 @@ Rexyra is a single-instance server. Replication, Sentinel, cluster mode, Pub/Sub
 - A script cannot create globals by assignment or with `rawset`, as in Redis, but could still replace the globals' metatable with `setmetatable(_G, ...)`, which Redis forbids.
 - Sorted sets always use a skip list internally; `OBJECT ENCODING` reports `listpack` while the set is within Redis's compact-encoding thresholds.
 
+## Pub/Sub
+
+`SUBSCRIBE`, `PSUBSCRIBE`, `SSUBSCRIBE`, their `UNSUBSCRIBE` counterparts, `PUBLISH`, `SPUBLISH` and `PUBSUB` behave as in Redis: messages are arrays in RESP2 and push frames in RESP3; a RESP2 connection that has subscribed may only manage its subscriptions, `PING`, `QUIT` and `RESET`; in RESP3 every command stays available. Sharded channels, which exist for cluster mode, are a separate set of channels on a single server. Messages are not stored: one published while nobody listens is lost.
+
+- A subscriber whose unread output passes 32 MB, or stays over 8 MB for 60 seconds, is disconnected: Redis's default `client-output-buffer-limit` for the `pubsub` class. The limit cannot be changed yet, and ordinary clients have none, as in Redis by default.
+- `COMMAND INFO` lists no key positions for `SSUBSCRIBE`, `SUNSUBSCRIBE` and `SPUBLISH`. Redis describes their shard channels as keys (for cluster routing) flagged as not really keys.
+- The order of the channels in `PUBSUB CHANNELS` and of the replies to `UNSUBSCRIBE` without arguments is by name; in Redis it is unspecified.
+
 ## Memory limit
 
 - `maxmemory` (off by default) is compared with what the process has allocated. Before each command, keys are evicted according to `maxmemory-policy` until use is back under the limit; if nothing can be evicted, commands that may add data are refused with `OOM command not allowed when used memory > 'maxmemory'.` while reads and deletes still work. The same applies inside `MULTI` (the transaction is discarded) and to the first write of a script.
@@ -61,6 +68,6 @@ Rexyra is a single-instance server. Replication, Sentinel, cluster mode, Pub/Sub
 - `requirepass` sets the password of the `default` user; `AUTH password`, `AUTH user password` and `HELLO ... AUTH user password` log in. Until then every command except `AUTH`, `HELLO`, `QUIT` and `RESET` is answered with `NOAUTH Authentication required.`. Connections made while no password was needed stay logged in when one is set, as in Redis.
 - ACL users are created with `ACL SETUSER` or `user` lines in the configuration file, using Redis's rule syntax: `on`/`off`, `>password`, `<password`, `#hash`, `!hash`, `nopass`, `resetpass`, `~pattern`, `%R~pattern`, `%W~pattern`, `allkeys`, `resetkeys`, `+command`, `-command`, `+command|subcommand`, `+@category`, `-@category`, `allcommands`, `nocommands`, `reset`. Passwords are kept only as SHA-256 hashes and compared in constant time. `ACL LIST`, `ACL GETUSER` and the error messages match Redis 7.4.
 - Permissions are checked for every command, again when a queued transaction runs, and for each command a script calls (scripts run with the caller's permissions). `ACL DELUSER` closes the user's connections.
-- Differences from Redis: a command is checked as a whole for key access, so a command that writes needs write permission on every key it names, including those it only reads (`COPY` or `LMOVE` sources, for example). The category lists (`ACL CAT`) follow Redis for the commands this server has but are derived from this server's command table, so a few commands may sit in slightly different categories. Channel rules (`&pattern`, `allchannels`, `resetchannels`) are accepted and shown back but have nothing to act on, since there is no Pub/Sub. Selectors (rules in parentheses) are rejected.
+- Differences from Redis: a command is checked as a whole for key access, so a command that writes needs write permission on every key it names, including those it only reads (`COPY` or `LMOVE` sources, for example). The category lists (`ACL CAT`) follow Redis for the commands this server has but are derived from this server's command table, so a few commands may sit in slightly different categories. Channel rules (`&pattern`, `allchannels`, `resetchannels`) apply to `PUBLISH`, `SPUBLISH`, `SUBSCRIBE`, `SSUBSCRIBE` and `PSUBSCRIBE` (a pattern must be allowed exactly as written), and a subscriber whose user loses access to one of its channels is disconnected, as in Redis. Selectors (rules in parentheses) are rejected.
 - Users created with `ACL SETUSER` live in memory only: there is no `aclfile` and no `CONFIG REWRITE`, so put users that must survive a restart in the configuration file. `ACL LOG` is not implemented.
 - `AUTH`, `HELLO`, `ACL` and `CONFIG SET requirepass` are kept out of the slow log, so passwords do not end up there. There is no TLS: on an untrusted network, passwords and data travel in the clear, so use a tunnel or keep the server on a private network.

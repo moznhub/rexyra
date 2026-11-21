@@ -62,7 +62,7 @@ Today a connection only ever receives the reply to something it sent: it hands a
 
 | | Item | Done when |
 |---|---|---|
-| L | **Client library smoke tests.** StackExchange.Redis is done: [clients](../clients/README.md), versions 2.12 and 3.4 in CI, subscription test waiting for 0.3.0. Then redis-py, node-redis, Jedis, go-redis and redis-rs. Each connects the way its documentation shows, runs the basics of every data type, a transaction, a script, and a subscription. | Each library has a test that runs in CI, and whatever it turned up is fixed or listed in COMPATIBILITY.md. |
+| L | **Client library smoke tests.** StackExchange.Redis is done: [clients](../clients/README.md), versions 2.12 and 3.4 in CI, subscriptions included. Then redis-py, node-redis, Jedis, go-redis and redis-rs. Each connects the way its documentation shows, runs the basics of every data type, a transaction, a script, and a subscription. | Each library has a test that runs in CI, and whatever it turned up is fixed or listed in COMPATIBILITY.md. |
 | M | **Keyspace notifications.** `notify-keyspace-events` and the events for every command that changes a key, for expiry and for eviction. | The events for each command match Redis's table, compared with the multi-connection harness. With the setting off, which is the default, the cost is not measurable. |
 | S | **Commands the libraries ask for** on connecting or in common use and Rexyra lacks, as the smoke tests reveal them. `CLIENT TRACKING`, `CLIENT REPLY` and `WAIT` are the likely ones. | |
 

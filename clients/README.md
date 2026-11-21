@@ -10,7 +10,7 @@ More libraries (redis-py, node-redis, Jedis, go-redis, redis-rs) are planned; se
 
 ## StackExchange.Redis
 
-Covers connecting in RESP2 and RESP3, every data type, keys and expiry, `SELECT`, transactions with conditions (`WATCH`), batches and many concurrent callers on one multiplexer, Lua scripts (`EVAL`, `LuaScript` with named parameters, `EVALSHA`), the built-in lock helpers, the server API (`INFO`, `CONFIG GET`, `CLIENT LIST`, `FLUSHDB` ...), a wrong password, and reconnecting after the server drops the connection. The Pub/Sub test is skipped until Pub/Sub is implemented.
+Covers connecting in RESP2 and RESP3, every data type, keys and expiry, `SELECT`, transactions with conditions (`WATCH`), batches and many concurrent callers on one multiplexer, Lua scripts (`EVAL`, `LuaScript` with named parameters, `EVALSHA`), the built-in lock helpers, the server API (`INFO`, `CONFIG GET`, `CLIENT LIST`, `FLUSHDB` ...), a wrong password, and reconnecting after the server drops the connection. and Pub/Sub (subscribe, publish, receive).
 
 Needs the .NET 8 SDK and a release build of the server:
 
