@@ -1,0 +1,35 @@
+{
+  "deliveries_expected": 65152000,
+  "deliveries_per_sec": 3219073.0,
+  "deliveries_received": 65152000,
+  "delivery_latency_ms": {
+    "max": 46.48,
+    "p50": 13.79,
+    "p99": 27.12,
+    "p999": 32.95,
+    "samples": 4072000
+  },
+  "drain_seconds": 0.23,
+  "get_latency_ms_meanwhile": {
+    "max": 28.43,
+    "p50": 6.14,
+    "p99": 17.74,
+    "p999": 24.86,
+    "samples": 2215
+  },
+  "label": "rexyra 1000 subscribers",
+  "message_bytes": 64,
+  "out_of_order": 0,
+  "pipeline_depth": 32,
+  "publish_seconds": 20.01,
+  "published": 65152,
+  "published_per_sec": 3256.0,
+  "publishes_with_fewer_receivers": [],
+  "rate_limit": 0,
+  "receivers_reported_by_publish": 65152000,
+  "server_rss_mib_first": 18,
+  "server_rss_mib_peak": 39,
+  "subscribers": 1000,
+  "subscribers_disconnected": 0,
+  "subscribers_missing_messages": 0
+}

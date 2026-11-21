@@ -497,6 +497,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rexyra-fanout"
+version = "0.2.0"
+dependencies = [
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "rexyra-persist"
 version = "0.2.0"
 dependencies = [

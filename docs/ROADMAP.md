@@ -49,7 +49,7 @@ Today a connection only ever receives the reply to something it sent: it hands a
 | S | **Sharded Pub/Sub.** `SSUBSCRIBE`, `SUNSUBSCRIBE`, `SPUBLISH`, `PUBSUB SHARDCHANNELS` / `SHARDNUMSUB`, which on a single instance behave like their plain counterparts with a separate set of channels. | As above. |
 | S | **Access control.** The channel rules that `ACL SETUSER` already stores (`&pattern`, `allchannels`, `resetchannels`) are enforced, `ACL DRYRUN` checks them, and a subscriber whose permission is taken away is disconnected, as in Redis. | The ACL command scripts match Redis with the Pub/Sub cases added. |
 | S | **Everything that mentions subscribers.** `CLIENT LIST` (`sub`, `psub`, `ssub`, the `P` flag), `CLIENT KILL TYPE pubsub`, `INFO` (`pubsub_channels`, `pubsub_patterns`, `pubsubshard_channels`), `RESET`, and cleaning up when a subscriber disconnects. `PUBLISH` from inside `MULTI` and from scripts; `SUBSCRIBE` refused inside scripts. | Covered by tests and by the comparison scripts. |
-| M | **Verification.** A harness that drives several connections in a fixed order against Rexyra and Redis and compares everything each connection received. A fan-out benchmark: one publisher, many subscribers. | The harness runs in CI. The benchmark report gives messages per second at 1, 10, 100 and 1,000 subscribers, the latency of ordinary commands while it runs, and what happens with a slow subscriber. |
+| M | **Verification.** A harness that drives several connections in a fixed order against Rexyra and Redis and compares everything each connection received. A fan-out benchmark: one publisher, many subscribers (done: [benchmarks/pubsub](benchmarks/pubsub)). | The harness runs in CI. The benchmark report gives messages per second at 1, 10, 100 and 1,000 subscribers, the latency of ordinary commands while it runs, and what happens with a slow subscriber. |
 | S | **Documentation.** README, COMPATIBILITY.md and the changelog; Pub/Sub comes off the "not implemented" lists. | |
 
 ### Decisions taken
@@ -90,6 +90,7 @@ Not scheduled. Roughly in order of likely demand.
 - **TLS.** An optional encrypted listener. Until then, Rexyra belongs on networks you trust.
 - **Check and repair tools** for snapshot and append-only files.
 - **More commands:** `SWAPDB`, `CLIENT PAUSE`, `LATENCY`, `DEBUG`, `MONITOR`, the `HELP` subcommands; HyperLogLog (`PFADD` ...); geospatial commands (`GEOADD` ...); streams (`XADD` ...).
+- **Fewer I/O worker threads.** The network runtime starts one worker per logical processor. Under Pub/Sub fan-out, four workers delivered as much as 24 with under half the processor time ([benchmarks/pubsub](benchmarks/pubsub)). A smaller default, measured on ordinary traffic as well, and a setting like Redis's `io-threads`.
 - **An ARM64 build.**
 
 ### Limits of the snapshot design, and questions it left open
