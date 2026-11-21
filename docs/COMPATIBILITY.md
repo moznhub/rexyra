@@ -10,7 +10,6 @@ Rexyra is a single-instance server. Replication, Sentinel, cluster mode, streams
 
 Also not implemented yet, found by the [client library tests](../clients/README.md):
 
-- **Expiry of single hash fields** (`HEXPIRE`, `HPEXPIRE`, `HTTL`, `HPERSIST` and the rest, new in Redis 7.4).
 - **Client-side caching** (`CLIENT TRACKING`). go-redis and redis-py turn their client-side cache off, or refuse to connect with one configured, when the server does not support it.
 - `COMMAND GETKEYSANDFLAGS`, `WAIT`, `LATENCY`, `CLIENT PAUSE` / `UNPAUSE`, `MONITOR`.
 
@@ -46,14 +45,23 @@ Also not implemented yet, found by the [client library tests](../clients/README.
 - A save in progress uses up to 16 MB for what it has read ahead of the disk, plus the old versions of whatever commands change while it runs, until they are written: a save during heavy overwriting, or onto a slow disk, can hold a copy of everything that was overwritten. Nothing stays allocated after a save. `FLUSHALL` or `FLUSHDB` during a save abandons it and starts a new one right after.
 - A crash or kill during a save leaves the previous snapshot in place. The unfinished `temp-*.rdb*` file it leaves behind is removed, with a warning, the next time the server starts on that directory. A new snapshot replaces the old one in a single rename, after its contents are on disk, and the directory is flushed afterwards. A data directory is for one server at a time.
 - In a background-saved file the keys of different databases can be interleaved, with a database-selection marker wherever they switch. Redis loads this; it is only unusual to look at.
-- Snapshot files use the RDB format and load in Redis 7, and snapshots written by Redis 7 load here. Files from Redis older than 7.0 that use its retired compact encodings, and files containing streams, module data or hashes with per-field expiry, are refused with a message saying why.
-- `DUMP` payloads restore on Redis and the other way round, but are not byte-identical to Redis's for the same value, because this server writes the plain encodings.
+- Snapshot files use the RDB format and load in Redis 7, and snapshots written by Redis 7 load here. Files from Redis older than 7.0 that use its retired compact encodings, and files containing streams or module data, are refused with a message saying why.
+- A snapshot that holds hash fields with a TTL of their own is written in RDB format 12, which Redis 7.4 introduced for them, and loads in Redis 7.4 and later only; one without is written in format 11, as before, and loads in Redis 7.0 and later. Fields whose TTL has passed are left out when a snapshot is loaded or a value restored, as in Redis. A small hash whose field TTLs have all been removed with `HPERSIST` is saved as a plain hash, so after a restart `OBJECT ENCODING` says `listpack` where Redis keeps saying `listpackex`.
+- `DUMP` payloads restore on Redis and the other way round, but are not byte-identical to Redis's for the same value, because this server writes the plain encodings. A small hash with field TTLs is the exception: it is written in Redis 7.4's own listpack form.
 - A snapshot that cannot be read stops the server at start-up instead of starting empty.
 - `SHUTDOWN` replies `OK` before the connection closes; Redis closes it without a reply. It saves only if something changed since the last save, unless `SAVE` or `NOSAVE` is given.
 - `FUNCTION LIST` shows a library's functions in the order they were registered, and libraries by name; Redis's order is unspecified.
 - Either `SCRIPT KILL` or `FUNCTION KILL` stops whatever is running, script or function; Redis requires the matching one.
 - A script cannot create globals by assignment or with `rawset`, as in Redis, but could still replace the globals' metatable with `setmetatable(_G, ...)`, which Redis forbids.
 - Sorted sets always use a skip list internally; `OBJECT ENCODING` reports `listpack` while the set is within Redis's compact-encoding thresholds.
+
+## Hash field expiry
+
+`HEXPIRE`, `HPEXPIRE`, `HEXPIREAT`, `HPEXPIREAT`, `HTTL`, `HPTTL`, `HEXPIRETIME`, `HPEXPIRETIME` and `HPERSIST` reply as in Redis 7.4, errors and their order included, in RESP2 and RESP3. A field past its TTL is treated as Redis 7.4 treats it until it is reclaimed: `HGETALL`, `HKEYS`, `HVALS`, `HSCAN`, `SORT ... BY/GET` and `HTTL` leave it out; `HGET`, `HMGET`, `HEXISTS`, `HSTRLEN`, `HSETNX`, `HINCRBY` and `HINCRBYFLOAT` delete it when they look it up; `HRANDFIELD` deletes every such field of the hash first; `HLEN` still counts it, `HSET` and `HDEL` count it as there, and `HEXPIRE` can give it a new TTL. `HSET` removes a field's TTL, `HINCRBY` and `HINCRBYFLOAT` keep it. In a small hash, fields with a TTL come first in `HGETALL`, by time, as in Redis's `listpackex` encoding. `INFO` reports `subexpiry` per database and `expired_subkeys`, and a field reclaimed counts as a change of its key for `WATCH`.
+
+- Fields are reclaimed like keys: exactly, the hash whose earliest field is due first, within about 100 ms, by the same background cycle, which takes at most 2,000 fields per database per tick (20,000 a second), so a hash with a million fields due never holds commands up; until then they stay counted by `HLEN`. Redis's cycle adapts its effort instead.
+- Field TTLs take more memory than in Redis. Measured with `used_memory`: a small hash's first field TTL about 130 bytes and each further one 8, and in a hash of more than 512 fields about 160 bytes per field with a TTL; Redis 7.4 takes about 45 and 13. A hash with no field TTLs costs nothing extra.
+- The append-only file logs field TTLs as absolute `HPEXPIREAT`, deleted and reclaimed fields as `HDEL`, `HPERSIST` only for the fields it changed, and `HINCRBYFLOAT` on a field with a TTL as `HSET` and `HPEXPIREAT` in `MULTI`/`EXEC`, as Redis does. `SORT ... STORE` with `BY` or `GET` is logged as its result, since it may have read fields or keys past their TTL that replay would find still there.
 
 ## Pub/Sub
 
@@ -70,13 +78,13 @@ Also not implemented yet, found by the [client library tests](../clients/README.
 
 `notify-keyspace-events` (in the configuration file, on the command line, or with `CONFIG SET`; empty, so off, by default) takes Redis's class letters: `K` and `E` for the `__keyspace@<db>__:<key>` and `__keyevent@<db>__:<event>` channels, `g $ l s h z` for the commands of each type, `x` expired, `e` evicted, `m` key miss, `n` new key, `t` and `d` (accepted, though there are no streams or module types to report), and `A` for `g$lshzxetd`. It is parsed, normalised (`CONFIG GET` shows `KEA` as `AKE`) and refused (`Invalid event class character`) exactly as in Redis, and `CONFIG REWRITE` writes it back.
 
-Every command Rexyra has raises the events Redis 7.4 raises, with the same names, classes and order, including those of a list, set, sorted set or hash emptied by a command (`del`), of `*STORE` commands with an empty result (`del`), of blocking commands when they are served, and of commands run by `MULTI`/`EXEC`, scripts and functions. `FLUSHDB`, `FLUSHALL` and `SWAPDB` raise none, as in Redis. `expired` is raised when a key whose TTL has passed is deleted, whether a lookup found it or the periodic cycle did; `evicted` when `maxmemory` removes a key. The messages go through Pub/Sub like any other, so patterns, RESP2 and RESP3, channel permissions and the output limit apply; a client subscribed to its own events gets them after the reply of the command that caused them (after the whole of `EXEC`'s), as in Redis 7.2 and later.
+Every command Rexyra has raises the events Redis 7.4 raises, with the same names, classes and order, including those of a list, set, sorted set or hash emptied by a command (`del`), of `*STORE` commands with an empty result (`del`), of blocking commands when they are served, and of commands run by `MULTI`/`EXEC`, scripts and functions. `FLUSHDB`, `FLUSHALL` and `SWAPDB` raise none, as in Redis. Hash fields raise Redis 7.4's events: `hexpire` when TTLs are set, `hpersist` when one is removed, `hdel` for fields a time already past deletes, and `hexpired` when fields are deleted because their TTL passed (once per hash per lookup or cycle), each followed by `del` if the hash is left empty. `expired` is raised when a key whose TTL has passed is deleted, whether a lookup found it or the periodic cycle did; `evicted` when `maxmemory` removes a key. The messages go through Pub/Sub like any other, so patterns, RESP2 and RESP3, channel permissions and the output limit apply; a client subscribed to its own events gets them after the reply of the command that caused them (after the whole of `EXEC`'s), as in Redis 7.2 and later.
 
 This was checked with [rexyra-keyevents](../tools/rexyra-keyevents/src/main.rs), which runs [a script covering every command](../tools/rexyra-keyevents/scripts/all.txt) against Rexyra and against Redis 7.4 and records the exact stream of notifications, with `KEA`, `KEAmn` and each class on its own. The streams are identical. Differences that remain:
 
 - Keys removed by the periodic expiry cycle are announced in the order they expire, as that cycle is exact here (see above); Redis samples keys at random.
 - No notification is ever published while data is being loaded at start-up: Rexyra accepts connections only once loading is over. (Redis lets a client subscribe during loading, and it may see events from the append-only file being replayed.)
-- The `hexpired`, `hexpire` and `hpersist` events, and the others of commands Rexyra does not have (streams, geospatial, HyperLogLog, modules), are not raised.
+- The events of commands Rexyra does not have (streams, geospatial, HyperLogLog, modules) are not raised.
 
 ## Memory limit
 

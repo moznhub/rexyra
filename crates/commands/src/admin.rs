@@ -162,6 +162,7 @@ fn section(ctx: &mut Ctx<'_>, name: &str, out: &mut String) {
                  total_connections_received:{}\r\n\
                  total_commands_processed:{}\r\n\
                  instantaneous_ops_per_sec:{}\r\n\
+                 expired_subkeys:{}\r\n\
                  expired_keys:{}\r\n\
                  evicted_keys:{}\r\n\
                  pubsub_channels:{}\r\n\
@@ -171,6 +172,7 @@ fn section(ctx: &mut Ctx<'_>, name: &str, out: &mut String) {
                 stats.connections,
                 stats.commands,
                 stats.ops_per_sec(),
+                ctx.keyspace.expired_fields(),
                 stats.expired_keys,
                 stats.evicted_keys,
                 server.pubsub.channel_count(),
@@ -216,9 +218,10 @@ fn section(ctx: &mut Ctx<'_>, name: &str, out: &mut String) {
                 if !db.is_empty() {
                     let _ = write!(
                         out,
-                        "db{index}:keys={},expires={},avg_ttl=0,subexpiry=0\r\n",
+                        "db{index}:keys={},expires={},avg_ttl=0,subexpiry={}\r\n",
                         db.len(),
                         db.volatile_len(),
+                        db.volatile_hashes(),
                     );
                 }
             }
@@ -606,6 +609,7 @@ pub(crate) fn config(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
             return wrong_subcommand_arity("config", sub);
         }
         ctx.server.stats.reset();
+        ctx.keyspace.reset_expired_fields();
         Frame::ok()
     } else if is(sub, "REWRITE") {
         if !rest.is_empty() {
@@ -700,11 +704,14 @@ pub(crate) fn value_size(value: &Value, samples: usize) -> usize {
     match value {
         Value::String(text) => text.len(),
         Value::List(list) => sampled(list.len(), samples, list.iter().map(Bytes::len)),
-        Value::Hash(hash) => sampled(
-            hash.len(),
-            samples,
-            hash.iter().map(|(field, value)| field.len() + value.len()),
-        ),
+        Value::Hash(hash) => {
+            sampled(
+                hash.len(),
+                samples,
+                hash.iter_stored()
+                    .map(|(field, value)| field.len() + value.len()),
+            ) + hash.field_ttl_overhead()
+        }
         // Not through `Set::iter`, which hands out shared copies of the
         // members: sharing a member leaves a reference count on it.
         Value::Set(set) => match set {

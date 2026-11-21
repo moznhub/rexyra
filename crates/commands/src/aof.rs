@@ -550,9 +550,12 @@ pub(crate) fn propagate(
     }
     match replacement {
         Some(commands) => {
+            // Several commands standing for one are logged as one unit.
+            aof.begin_batch();
             for command in &commands {
                 aof.log(ctx.client.db, command);
             }
+            aof.end_batch();
         }
         None if writes => aof.log(ctx.client.db, args),
         None => {}
@@ -958,6 +961,14 @@ mod tests {
                 if kind == "hash" || kind == "set" {
                     value.sort();
                 }
+                // And when each field of a hash expires.
+                if kind == "hash" {
+                    for field in value.clone() {
+                        let field = field.split('=').next().unwrap_or_default().to_owned();
+                        let at = h.cmd(&["HPEXPIRETIME", &key, "FIELDS", "1", &field]);
+                        value.push(format!("{field}@{at:?}"));
+                    }
+                }
                 let expiry = h.cmd(&["PEXPIRETIME", &key]);
                 out.push(format!("db{db} {key} {kind} {value:?} {expiry:?}"));
             }
@@ -1038,6 +1049,13 @@ mod tests {
             "DEL b",
             "SETBIT bits 7 1",
             "SORT l2 ALPHA STORE sorted",
+            "HSET hx a 1 b 2 c 3 d 4",
+            "HEXPIRE hx 100 FIELDS 3 a b nope",
+            "HPEXPIREAT hx 1 FIELDS 1 c",
+            "HPERSIST hx FIELDS 1 b",
+            "HINCRBYFLOAT hx a 0.5",
+            "HPEXPIRE hx 5000 LT FIELDS 1 d",
+            "HINCRBY hx d 1",
             "SELECT 3",
             "SET in-three yes",
             "LPUSH l3 x",
@@ -1056,6 +1074,158 @@ mod tests {
         assert_eq!(contents(&mut fresh), before);
         // Replaying is not news.
         assert_eq!(fresh.server.dirty, 0);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn hash_field_ttls_are_logged_so_that_replay_rebuilds_them() {
+        let dir = temp_dir("field-expiry");
+        let mut h = start(&dir);
+        let now = h.now;
+        h.run("HSET h a 1 b 2 c 3 d 4");
+        assert_eq!(
+            h.run("HEXPIRE h 100 FIELDS 3 a b zz"),
+            Frame::Array(vec![
+                Frame::Integer(1),
+                Frame::Integer(1),
+                Frame::Integer(-2)
+            ])
+        );
+        // Conditions that do not hold, or no such field, log nothing.
+        h.run("HEXPIRE h 100 GT FIELDS 1 a");
+        h.run("HEXPIRE h 100 NX FIELDS 2 a zz");
+        h.run("HPERSIST h FIELDS 2 c zz");
+        h.run("HEXPIRE nokey 100 FIELDS 1 a");
+        h.run("HEXPIRE h 0 FIELDS 1 d");
+        h.run("HPERSIST h FIELDS 2 b zz");
+        h.run("HSET f x 1");
+        h.run("HPEXPIRE f 100000 FIELDS 1 x");
+        h.run("HINCRBYFLOAT f x 1.5");
+
+        let log = log_text(&mut h);
+        let at = (now + 100_000).to_string();
+        for logged in [
+            format!("HPEXPIREAT $1 h $13 {at} $6 FIELDS $1 2 $1 a $1 b"),
+            "HDEL $1 h $1 d".to_owned(),
+            "HPERSIST $1 h $6 FIELDS $1 1 $1 b".to_owned(),
+            // A float increment is logged as its result, which keeps the TTL.
+            format!(
+                "MULTI *4 $4 HSET $1 f $1 x $3 2.5 *6 $10 HPEXPIREAT $1 f $13 {at} $6 FIELDS $1 1 $1 x *1 $4 EXEC"
+            ),
+        ] {
+            assert!(log.contains(&logged), "{logged:?} in {log}");
+        }
+        for word in [" HEXPIRE ", " NX ", " GT ", "zz", "nokey", "HINCRBYFLOAT"] {
+            assert!(!log.contains(word), "{word:?} in {log}");
+        }
+
+        // Restarted 40 seconds later: 60 seconds are left, not 100.
+        h.advance(40_000);
+        let (mut fresh, _) = restart(&mut h);
+        let ints =
+            |values: &[i64]| Frame::Array(values.iter().map(|&n| Frame::Integer(n)).collect());
+        assert_eq!(
+            fresh.run("HTTL h FIELDS 4 a b c d"),
+            ints(&[60, -1, -1, -2])
+        );
+        assert_eq!(fresh.run("HTTL f FIELDS 1 x"), ints(&[60]));
+        assert_eq!(fresh.run("HGET f x"), bulk("2.5"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_hash_field_is_there_during_replay_exactly_when_it_was() {
+        let dir = temp_dir("field-timeline");
+        let mut h = start(&dir);
+        // A field that expires and is then written as if it were not there.
+        h.run("HSET n k 5 other 1");
+        h.run("HPEXPIRE n 10 FIELDS 1 k");
+        h.advance(20);
+        assert_eq!(h.run("HSETNX n k 7"), Frame::Integer(1));
+        h.run("HSET i k 5 other 1");
+        h.run("HPEXPIRE i 10 FIELDS 1 k");
+        h.advance(20);
+        assert_eq!(h.run("HINCRBY i k 1"), Frame::Integer(1));
+        // One that a read finds expired, and one nobody reads.
+        h.run("HSET r k 5 other 1");
+        h.run("HPEXPIRE r 10 FIELDS 1 k");
+        h.run("HSET g y 1 z 2");
+        h.run("HPEXPIRE g 10 FIELDS 1 y");
+        h.run("HSET whole y 1");
+        h.run("HPEXPIRE whole 10 FIELDS 1 y");
+        h.advance(20);
+        assert_eq!(h.run("HGET r k"), Frame::Null);
+        h.keyspace.cron(h.now, 100);
+        tick(&mut h.server, &mut h.keyspace, h.now);
+        // Then the key is made again, without the field.
+        h.run("HSET whole z 2");
+        // A sort that reads a field past its time before it is reclaimed.
+        h.run("RPUSH l 1 2");
+        h.run("HSET w_1 f 10");
+        h.run("HSET w_2 f 20 g 1");
+        h.run("HPEXPIRE w_2 10 FIELDS 1 f");
+        h.advance(20);
+        assert_eq!(
+            h.run("SORT l BY w_*->f GET w_*->f STORE sorted"),
+            Frame::Integer(2)
+        );
+        assert_eq!(
+            h.run("LRANGE sorted 0 -1"),
+            Frame::Array(bulks(&["", "10"]))
+        );
+
+        let log = log_text(&mut h);
+        for logged in [
+            "HDEL $1 n $1 k",
+            "HDEL $1 i $1 k",
+            "HDEL $1 r $1 k",
+            "HDEL $1 g $1 y",
+            "HDEL $5 whole $1 y",
+        ] {
+            assert!(log.contains(logged), "{logged:?} in {log}");
+        }
+        assert!(
+            log.find("HDEL $1 n $1 k") < log.find("HSETNX $1 n"),
+            "{log}"
+        );
+        let before = contents(&mut h);
+        // Replayed much later, when every TTL above is long past.
+        h.advance(1_000_000);
+        let (mut fresh, _) = restart(&mut h);
+        assert_eq!(contents(&mut fresh), before);
+        assert_eq!(fresh.run("HGET n k"), bulk("7"));
+        assert_eq!(fresh.run("HGET i k"), bulk("1"));
+        assert_eq!(
+            fresh.run("HGETALL whole"),
+            Frame::Map(vec![(bulk("z"), bulk("2"))])
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_restored_hash_is_logged_without_the_fields_it_lost() {
+        let dir = temp_dir("restore-fields");
+        let mut h = start(&dir);
+        h.run("HSET src a 1 b 2");
+        h.run("HPEXPIRE src 10 FIELDS 1 a");
+        let Frame::Bulk(payload) = h.run("DUMP src") else {
+            panic!("no payload")
+        };
+        h.run("DEL src");
+        h.advance(20);
+        h.raw(&[
+            Bytes::from_static(b"RESTORE"),
+            Bytes::from_static(b"dst"),
+            Bytes::from_static(b"0"),
+            payload,
+        ]);
+        assert_eq!(h.run("HLEN dst"), Frame::Integer(1));
+        let (mut fresh, _) = restart(&mut h);
+        assert_eq!(fresh.run("HLEN dst"), Frame::Integer(1));
+        assert_eq!(
+            fresh.run("HGETALL dst"),
+            Frame::Map(vec![(bulk("b"), bulk("2"))])
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1348,6 +1518,8 @@ mod tests {
         }
         h.run("RPUSH list a b c");
         h.run("SET temp v EX 1000");
+        h.run("HSET fields a 1 b 2");
+        h.run("HEXPIRE fields 1000 FIELDS 1 a");
         h.cmd(&[
             "FUNCTION",
             "LOAD",
@@ -1392,12 +1564,16 @@ mod tests {
 
         let before = contents(&mut h);
         let (mut fresh, loaded) = restart(&mut h);
-        assert_eq!(loaded.base_keys, 502);
+        assert_eq!(loaded.base_keys, 503);
         assert_eq!(loaded.commands, 5); // a SELECT and the four changes
         assert_eq!(contents(&mut fresh), before);
         assert_eq!(fresh.run("GET key:0"), bulk("during"));
         assert_eq!(fresh.run("EXISTS key:1"), Frame::Integer(0));
         assert_eq!(fresh.run("TTL temp"), Frame::Integer(1000));
+        assert_eq!(
+            fresh.run("HTTL fields FIELDS 2 a b"),
+            Frame::Array(vec![Frame::Integer(1000), Frame::Integer(-1)])
+        );
         assert_eq!(fresh.run("FCALL one 0"), Frame::Integer(1));
 
         // And again, from a log that already has a base.

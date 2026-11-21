@@ -33,6 +33,10 @@ pub struct Spec {
     /// `s:0` .. : strings the foreground clients GET and SET.
     pub small_keys: usize,
     pub small_value: usize,
+    /// If not zero, the `s:` keys are hashes of this many fields `f<j>`,
+    /// each holding a `small_value`-byte value, and the foreground clients
+    /// `HGET` and `HSET` a random field instead of `GET` and `SET`.
+    pub small_fields: usize,
     /// `big:0` .. : large strings.
     pub big_keys: usize,
     pub big_size: usize,
@@ -62,6 +66,7 @@ fn base(name: &'static str, about: &'static str) -> Spec {
         kind: Kind::Traffic,
         small_keys: 100_000,
         small_value: 1000,
+        small_fields: 0,
         big_keys: 0,
         big_size: 0,
         lists: 0,
@@ -117,6 +122,15 @@ pub fn all() -> Vec<Spec> {
             ..base(
                 "coll",
                 "2 lists of 2,000,000 short elements, 2 hashes of 1,000,000 fields + 100,000 small strings; a toucher RPUSHes/HSETs each collection",
+            )
+        },
+        Spec {
+            small_keys: 100_000,
+            small_value: 100,
+            small_fields: 10,
+            ..base(
+                "hashes",
+                "100,000 hashes of 10 fields of 100 bytes; foreground HGET/HSET of a random field",
             )
         },
         Spec {

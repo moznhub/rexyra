@@ -184,7 +184,6 @@ func TestHashes(t *testing.T) {
 
 // Hash field expiry, new in Redis 7.4.
 func TestHashFieldExpiry(t *testing.T) {
-	skipOnRexyra(t, "hash field expiry (HEXPIRE, HTTL, HPERSIST, HPEXPIRE) is not implemented")
 	eachProtocol(t, func(t *testing.T, c *redis.Client, p string) {
 		h := p + "h"
 		must(c.HSet(ctx(), h, "a", "1", "b", "2").Result())

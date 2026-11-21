@@ -28,6 +28,8 @@ fn encoding(value: &Value) -> &'static str {
                 "quicklist"
             }
         }
+        // `listpackex` once a field TTL has been set, as in Redis.
+        Value::Hash(hash) if hash.is_compact() && hash.has_field_ttls() => "listpackex",
         Value::Hash(hash) if hash.is_compact() => "listpack",
         Value::Hash(_) => "hashtable",
         Value::Set(set) => set.encoding(),

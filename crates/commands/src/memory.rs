@@ -319,6 +319,37 @@ mod tests {
     }
 
     #[test]
+    fn hashes_with_field_ttls_are_counted_and_evicted_like_others() {
+        let mut h = Harness::new();
+        h.run("CONFIG SET maxmemory-policy allkeys-random");
+        h.run("CONFIG SET maxmemory 30000");
+        let value = "x".repeat(100);
+        for n in 0..300 {
+            let key = format!("h:{n:04}");
+            h.cmd(&["HSET", &key, "a", &value, "b", &value]);
+            h.cmd(&["HPEXPIRE", &key, "1000", "FIELDS", "1", "a"]);
+        }
+        assert!(used_memory(&h.server, &mut h.keyspace) < 31_000);
+        let left = dbsize(&mut h);
+        assert!(left < 150, "{left} keys left");
+        assert_eq!(h.server.stats.evicted_keys as i64, 300 - left);
+        // Evicted hashes left nothing behind for the field reclaimer.
+        let Frame::Verbatim { data, .. } = h.run("INFO keyspace") else {
+            panic!("no INFO")
+        };
+        let expected = format!("subexpiry={left}\r\n");
+        assert!(data.ends_with(expected.as_bytes()), "{data:?}");
+        h.advance(2_000);
+        h.keyspace.cron(h.now, 10_000);
+        assert_eq!(dbsize(&mut h), left);
+        let Frame::Bulk(survivor) = h.run("RANDOMKEY") else {
+            panic!("no key left")
+        };
+        let survivor = String::from_utf8(survivor.to_vec()).unwrap();
+        assert_eq!(h.cmd(&["HLEN", &survivor]), Frame::Integer(1));
+    }
+
+    #[test]
     fn lru_evicts_what_was_not_used_recently() {
         let mut h = Harness::new();
         h.run("CONFIG SET maxmemory-policy allkeys-lru");

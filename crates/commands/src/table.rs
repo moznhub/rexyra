@@ -163,6 +163,15 @@ pub static COMMANDS: &[CommandSpec] = &[
     cmd("hincrbyfloat", 4, WRITE_OOM_FAST, KEY1, "hash", "2.6.0", "Increments the floating point value of a field by a number. Uses 0 as initial value if the field doesn't exist.", hashes::hincrbyfloat),
     cmd("hscan", -3, READ, KEY1, "hash", "2.8.0", "Iterates over fields and values of a hash.", hashes::hscan),
     cmd("hrandfield", -2, READ, KEY1, "hash", "6.2.0", "Returns one or more random fields from a hash.", hashes::hrandfield),
+    cmd("hexpire", -6, WRITE_OOM_FAST, KEY1, "hash", "7.4.0", "Set expiry for hash field using relative time to expire (seconds)", hashes::hexpire),
+    cmd("hpexpire", -6, WRITE_OOM_FAST, KEY1, "hash", "7.4.0", "Set expiry for hash field using relative time to expire (milliseconds)", hashes::hpexpire),
+    cmd("hexpireat", -6, WRITE_OOM_FAST, KEY1, "hash", "7.4.0", "Set expiry for hash field using an absolute Unix timestamp (seconds)", hashes::hexpireat),
+    cmd("hpexpireat", -6, WRITE_OOM_FAST, KEY1, "hash", "7.4.0", "Set expiry for hash field using an absolute Unix timestamp (milliseconds)", hashes::hpexpireat),
+    cmd("httl", -5, READ_FAST, KEY1, "hash", "7.4.0", "Returns the TTL in seconds of a hash field.", hashes::httl),
+    cmd("hpttl", -5, READ_FAST, KEY1, "hash", "7.4.0", "Returns the TTL in milliseconds of a hash field.", hashes::hpttl),
+    cmd("hexpiretime", -5, READ_FAST, KEY1, "hash", "7.4.0", "Returns the expiration time of a hash field as a Unix timestamp, in seconds.", hashes::hexpiretime),
+    cmd("hpexpiretime", -5, READ_FAST, KEY1, "hash", "7.4.0", "Returns the expiration time of a hash field as a Unix timestamp, in msec.", hashes::hpexpiretime),
+    cmd("hpersist", -5, WRITE_FAST, KEY1, "hash", "7.4.0", "Removes the expiration time for each specified field", hashes::hpersist),
 
     // --- list -------------------------------------------------------------
     cmd("lpush", -3, WRITE_OOM_FAST, KEY1, "list", "1.0.0", "Prepends one or more elements to a list. Creates the key if it doesn't exist.", lists::lpush),

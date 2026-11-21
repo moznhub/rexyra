@@ -199,7 +199,6 @@ class LettuceDataTypeTest {
     }
 
     /** Field expiry, new in Redis 7.4. */
-    @Disabled("Rexyra: hash field expiry is not implemented (HEXPIRE: unknown command)")
     @ParameterizedTest
     @MethodSource("io.rexyra.clienttests.lettuce.LettuceSupport#protocols")
     void hashFieldExpiry(ProtocolVersion protocol) {

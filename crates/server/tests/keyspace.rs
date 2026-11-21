@@ -151,6 +151,68 @@ async fn expired_keys_are_removed_without_being_read() {
     }
 }
 
+impl Client {
+    /// Sends an inline command and returns its one-line reply.
+    async fn line(&mut self, command: &str) -> String {
+        self.0
+            .write_all(format!("{command}\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut reply = Vec::new();
+        let mut byte = [0u8; 1];
+        while !reply.ends_with(b"\r\n") {
+            timeout(TIMEOUT, self.0.read_exact(&mut byte))
+                .await
+                .unwrap()
+                .unwrap();
+            reply.push(byte[0]);
+        }
+        String::from_utf8_lossy(&reply).into_owned()
+    }
+
+    /// Repeats `command` until it replies `expected`, for up to 2 seconds.
+    async fn wait_for(&mut self, command: &str, expected: &str) {
+        for _ in 0..40 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            if self.line(command).await == expected {
+                return;
+            }
+        }
+        panic!("{command} never replied {expected:?}");
+    }
+}
+
+#[tokio::test]
+async fn hash_fields_expire_on_time_and_are_reclaimed_without_being_read() {
+    let mut c = Client::connect(start().await).await;
+    c.check("HSET h a 1 b 2 c 3", ":3\r\n").await;
+    c.check("HPEXPIRE h 100 FIELDS 2 a zz", "*2\r\n:1\r\n:-2\r\n")
+        .await;
+    c.check("HTTL h FIELDS 2 a b", "*2\r\n:1\r\n:-1\r\n").await;
+    c.check("HLEN h", ":3\r\n").await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    c.check("HGET h a", "$-1\r\n").await;
+    // HLEN counts a field until it is reclaimed, so only the background
+    // cycle can bring it down.
+    c.check("HPEXPIRE h 50 FIELDS 1 b", "*1\r\n:1\r\n").await;
+    c.wait_for("HLEN h", ":1\r\n").await;
+    c.check("HPEXPIRE h 50 FIELDS 1 c", "*1\r\n:1\r\n").await;
+    c.wait_for("EXISTS h", ":0\r\n").await;
+}
+
+#[tokio::test]
+async fn watch_sees_a_hash_field_expire() {
+    let addr = start().await;
+    let mut c = Client::connect(addr).await;
+    c.check("HSET h a 1 b 2", ":2\r\n").await;
+    c.check("HPEXPIRE h 50 FIELDS 1 a", "*1\r\n:1\r\n").await;
+    c.check("WATCH h", "+OK\r\n").await;
+    c.wait_for("HLEN h", ":1\r\n").await;
+    c.check("MULTI", "+OK\r\n").await;
+    c.check("PING", "+QUEUED\r\n").await;
+    c.check("EXEC", "*-1\r\n").await;
+}
+
 #[tokio::test]
 async fn watch_detects_a_write_from_another_connection() {
     let addr = start().await;

@@ -276,10 +276,12 @@ struct WorkerOut {
 }
 
 /// One closed-loop foreground client: GET or SET of a random existing
-/// `s:<n>` key.
+/// `s:<n>` key, or with `fields` HGET or HSET of one of its fields.
+#[allow(clippy::too_many_arguments)]
 fn worker(
     port: u16,
     keys: u64,
+    fields: u64,
     value: Arc<Vec<u8>>,
     get_percent: u64,
     seed: u64,
@@ -296,7 +298,17 @@ fn worker(
         let key = format!("s:{}", rng.below(keys));
         let is_get = rng.below(100) < get_percent;
         frame.clear();
-        if is_get {
+        if fields > 0 {
+            let field = format!("f{}", rng.below(fields));
+            if is_get {
+                encode(&mut frame, &[b"HGET", key.as_bytes(), field.as_bytes()]);
+            } else {
+                encode(
+                    &mut frame,
+                    &[b"HSET", key.as_bytes(), field.as_bytes(), &value],
+                );
+            }
+        } else if is_get {
             encode(&mut frame, &[b"GET", key.as_bytes()]);
         } else {
             encode(&mut frame, &[b"SET", key.as_bytes(), &value]);
@@ -630,10 +642,12 @@ fn run_traffic(spec: &Spec, o: &Options, run: u32, stem: &str) -> io::Result<Val
         .map(|c| {
             let (shared, value) = (Arc::clone(&shared), Arc::clone(&value));
             let (port, keys, get_percent) = (o.port, spec.small_keys as u64, o.get_percent);
+            let fields = spec.small_fields as u64;
             thread::spawn(move || {
                 worker(
                     port,
                     keys,
+                    fields,
                     value,
                     get_percent,
                     1000 + c as u64,

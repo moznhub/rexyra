@@ -5,11 +5,11 @@
 
 A Redis-compatible in-memory data server for Windows, written in Rust.
 
-Rexyra speaks the Redis protocol (RESP2 and RESP3) and implements 192 Redis commands, so existing Redis tools and client libraries can talk to it. It runs as a single native Windows executable: no WSL, no Docker, no runtime to install.
+Rexyra speaks the Redis protocol (RESP2 and RESP3) and implements 201 Redis commands, so existing Redis tools and client libraries can talk to it. It runs as a single native Windows executable: no WSL, no Docker, no runtime to install.
 
 ## Highlights
 
-- **Redis-compatible.** Strings, hashes, lists, sets, sorted sets, bitmaps, expiry, transactions, blocking commands, Pub/Sub, Lua scripting and functions. Replies and error messages are checked against Redis 7.4.
+- **Redis-compatible.** Strings, hashes (with Redis 7.4's expiry of single fields), lists, sets, sorted sets, bitmaps, expiry, transactions, blocking commands, Pub/Sub, Lua scripting and functions. Replies and error messages are checked against Redis 7.4.
 - **Durable, and interchangeable with Redis.** RDB snapshots and an append-only file in Redis's own formats: Redis loads Rexyra's files and Rexyra loads Redis's.
 - **Background saves without `fork`.** A point-in-time snapshot is written while commands keep running. Measured under load, throughput during a save is within a few percent of normal.
 - **Memory limit and eviction.** `maxmemory` with the eight Redis eviction policies, measured against what the process has actually allocated.
@@ -107,7 +107,7 @@ msiexec /i rexyra-vX.Y.Z-windows-x86_64.msi /qn PORT=6380 INSTALLFOLDER="D:\Rexy
 | Expiry | `EXPIRE` `PEXPIRE` `EXPIREAT` `PEXPIREAT` `TTL` `PTTL` `EXPIRETIME` `PEXPIRETIME` `PERSIST` |
 | Strings | `GET` `SET` `SETNX` `SETEX` `PSETEX` `GETSET` `GETDEL` `GETEX` `MGET` `MSET` `MSETNX` `INCR` `DECR` `INCRBY` `DECRBY` `INCRBYFLOAT` `APPEND` `STRLEN` `GETRANGE` `SUBSTR` `SETRANGE` `LCS` |
 | Bitmaps | `SETBIT` `GETBIT` `BITCOUNT` `BITPOS` `BITOP` `BITFIELD` `BITFIELD_RO` |
-| Hashes | `HSET` `HMSET` `HSETNX` `HGET` `HMGET` `HDEL` `HGETALL` `HKEYS` `HVALS` `HLEN` `HEXISTS` `HSTRLEN` `HINCRBY` `HINCRBYFLOAT` `HSCAN` `HRANDFIELD` |
+| Hashes | `HSET` `HMSET` `HSETNX` `HGET` `HMGET` `HDEL` `HGETALL` `HKEYS` `HVALS` `HLEN` `HEXISTS` `HSTRLEN` `HINCRBY` `HINCRBYFLOAT` `HSCAN` `HRANDFIELD` `HEXPIRE` `HPEXPIRE` `HEXPIREAT` `HPEXPIREAT` `HTTL` `HPTTL` `HEXPIRETIME` `HPEXPIRETIME` `HPERSIST` |
 | Lists | `LPUSH` `RPUSH` `LPUSHX` `RPUSHX` `LPOP` `RPOP` `LMPOP` `LMOVE` `RPOPLPUSH` `BLPOP` `BRPOP` `BLMPOP` `BLMOVE` `BRPOPLPUSH` `LLEN` `LRANGE` `LINDEX` `LPOS` `LSET` `LINSERT` `LREM` `LTRIM` |
 | Sets | `SADD` `SREM` `SCARD` `SISMEMBER` `SMISMEMBER` `SMEMBERS` `SMOVE` `SPOP` `SRANDMEMBER` `SSCAN` `SINTER` `SUNION` `SDIFF` `SINTERSTORE` `SUNIONSTORE` `SDIFFSTORE` `SINTERCARD` |
 | Sorted sets | `ZADD` `ZINCRBY` `ZREM` `ZCARD` `ZSCORE` `ZMSCORE` `ZRANK` `ZREVRANK` `ZCOUNT` `ZLEXCOUNT` `ZRANGE` `ZREVRANGE` `ZRANGEBYSCORE` `ZREVRANGEBYSCORE` `ZRANGEBYLEX` `ZREVRANGEBYLEX` `ZRANGESTORE` `ZREMRANGEBYRANK` `ZREMRANGEBYSCORE` `ZREMRANGEBYLEX` `ZPOPMIN` `ZPOPMAX` `ZMPOP` `BZPOPMIN` `BZPOPMAX` `BZMPOP` `ZUNION` `ZINTER` `ZDIFF` `ZUNIONSTORE` `ZINTERSTORE` `ZDIFFSTORE` `ZINTERCARD` `ZSCAN` `ZRANDMEMBER` |

@@ -70,11 +70,40 @@ fn load_strings(
     lo: usize,
     hi: usize,
     size: usize,
+    fields: usize,
     seed: u64,
 ) -> io::Result<()> {
     let mut conn = connect(port)?;
     let value = pattern(size, seed);
-    if size >= 64 * 1024 {
+    if fields > 0 {
+        // Small hashes: one `HSET key f0 v f1 v ...` per key, pipelined.
+        let names: Vec<String> = (0..fields).map(|j| format!("f{j}")).collect();
+        let mut buf = Vec::new();
+        let mut i = lo;
+        while i < hi {
+            let end = (i + 1000).min(hi);
+            buf.clear();
+            for k in i..end {
+                let key = format!("{prefix}{k}");
+                let mut args: Vec<&[u8]> = vec![b"HSET", key.as_bytes()];
+                for name in &names {
+                    args.push(name.as_bytes());
+                    args.push(&value);
+                }
+                encode(&mut buf, &args);
+            }
+            conn.send(&buf)?;
+            for _ in i..end {
+                let added = conn.read()?.int()?;
+                if added != fields as i64 {
+                    return Err(io::Error::other(format!(
+                        "HSET added {added} fields, expected {fields}"
+                    )));
+                }
+            }
+            i = end;
+        }
+    } else if size >= 64 * 1024 {
         for i in lo..hi {
             let key = format!("{prefix}{i}");
             conn.send(&set_header(key.as_bytes(), size))?;
@@ -107,6 +136,7 @@ fn spawn_strings(
     prefix: &'static str,
     count: usize,
     size: usize,
+    fields: usize,
     conns: usize,
 ) -> Vec<JoinHandle<io::Result<()>>> {
     let conns = conns.min(count).max(1);
@@ -115,7 +145,7 @@ fn spawn_strings(
         .map(|c| {
             let lo = c * chunk;
             let hi = ((c + 1) * chunk).min(count);
-            thread::spawn(move || load_strings(port, prefix, lo, hi, size, c as u64 + 1))
+            thread::spawn(move || load_strings(port, prefix, lo, hi, size, fields, c as u64 + 1))
         })
         .collect()
 }
@@ -175,11 +205,19 @@ pub fn load_dataset(spec: &Spec, port: u16) -> io::Result<()> {
             "s:",
             spec.small_keys,
             spec.small_value,
+            spec.small_fields,
             8,
         ));
     }
     if spec.big_keys > 0 {
-        handles.extend(spawn_strings(port, "big:", spec.big_keys, spec.big_size, 4));
+        handles.extend(spawn_strings(
+            port,
+            "big:",
+            spec.big_keys,
+            spec.big_size,
+            0,
+            4,
+        ));
     }
     for i in 0..spec.lists {
         let len = spec.list_len;
