@@ -295,6 +295,7 @@ const PARAMETERS: &[(&str, Access)] = &[
     ("rdb-key-save-delay", Access::Mutable),
     ("requirepass", Access::Mutable),
     ("protected-mode", Access::Mutable),
+    ("enable-debug-command", Access::Immutable),
     ("proto-max-bulk-len", Access::Fixed),
     ("hash-max-listpack-entries", Access::Fixed),
     ("hash-max-listpack-value", Access::Fixed),
@@ -345,6 +346,7 @@ fn parameter_value(ctx: &Ctx<'_>, name: &str) -> String {
         "rdb-key-save-delay" => server.rdb_key_save_delay.to_string(),
         "requirepass" => server.requirepass.clone(),
         "protected-mode" => yes_no(server.protected_mode),
+        "enable-debug-command" => server.enable_debug_command.name().to_owned(),
         "proto-max-bulk-len" => (512 * 1024 * 1024).to_string(),
         "hash-max-listpack-entries" => HASH_COMPACT_MAX_ENTRIES.to_string(),
         "set-max-intset-entries" => INTSET_MAX_ENTRIES.to_string(),
@@ -748,6 +750,7 @@ pub(crate) fn time(ctx: &mut Ctx<'_>, _args: &[Bytes]) -> Frame {
 #[cfg(test)]
 mod tests {
     use super::human_bytes;
+    use super::DebugCommand;
     use crate::testing::{bulk, err, Harness};
     use rexyra_resp::Frame;
 
@@ -1084,4 +1087,110 @@ mod tests {
             Frame::Array(vec![bulk("1700000000"), bulk("123000")])
         );
     }
+
+    #[test]
+    fn debug_is_refused_unless_enabled() {
+        let mut h = Harness::new();
+        let refused = h.run("DEBUG PANIC");
+        assert!(
+            matches!(&refused, Frame::Error(e) if e.starts_with("ERR DEBUG command not allowed. If the enable-debug-command option is set to \"local\"")),
+            "{refused:?}"
+        );
+        assert_eq!(
+            h.run("CONFIG GET enable-debug-command"),
+            Frame::Map(vec![(bulk("enable-debug-command"), bulk("no"))])
+        );
+        assert_eq!(
+            h.run("CONFIG SET enable-debug-command yes"),
+            err("ERR CONFIG SET failed (possibly related to argument 'enable-debug-command') - can't set immutable config")
+        );
+    }
+
+    #[test]
+    fn debug_local_allows_this_machine_only() {
+        let mut h = Harness::new();
+        h.server.enable_debug_command = DebugCommand::Local;
+        assert_eq!(
+            h.run("DEBUG nope"),
+            err("ERR unknown subcommand or wrong number of arguments for 'nope'. Try DEBUG HELP.")
+        );
+        h.client.addr = "10.1.2.3:5000".to_owned();
+        assert!(h.run("DEBUG nope").is_error());
+        assert!(
+            matches!(h.run("DEBUG nope"), Frame::Error(e) if e.starts_with("ERR DEBUG command not allowed"))
+        );
+        h.client.addr = "[::1]:5000".to_owned();
+        assert!(
+            matches!(h.run("DEBUG nope"), Frame::Error(e) if e.starts_with("ERR unknown subcommand"))
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "DEBUG PANIC called by client 7")]
+    fn debug_panic_panics() {
+        let mut h = Harness::new();
+        h.server.enable_debug_command = DebugCommand::Yes;
+        h.run("DEBUG PANIC");
+    }
+}
+
+/// Who may run `DEBUG` (`enable-debug-command`). Off by default: it can
+/// stop the server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DebugCommand {
+    #[default]
+    No,
+    Yes,
+    /// Only clients connected from this machine.
+    Local,
+}
+
+impl DebugCommand {
+    pub fn parse(text: &str) -> Option<DebugCommand> {
+        match text.to_ascii_lowercase().as_str() {
+            "no" => Some(DebugCommand::No),
+            "yes" => Some(DebugCommand::Yes),
+            "local" => Some(DebugCommand::Local),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            DebugCommand::No => "no",
+            DebugCommand::Yes => "yes",
+            DebugCommand::Local => "local",
+        }
+    }
+}
+
+const ERR_DEBUG_NOT_ALLOWED: &str = "ERR DEBUG command not allowed. If the enable-debug-command \
+    option is set to \"local\", you can run it from a local connection, otherwise you need to set \
+    this option in the configuration file, and then restart the server.";
+
+/// `DEBUG PANIC`, the only subcommand: stops the server as an internal
+/// error would, so that what happens then (the process exits and the
+/// service manager restarts it) can be tested.
+pub(crate) fn debug(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
+    let local = || {
+        ctx.client
+            .addr
+            .parse::<std::net::SocketAddr>()
+            .is_ok_and(|addr| addr.ip().to_canonical().is_loopback())
+    };
+    let allowed = match ctx.server.enable_debug_command {
+        DebugCommand::Yes => true,
+        DebugCommand::Local => local(),
+        DebugCommand::No => false,
+    };
+    if !allowed {
+        return Frame::error(ERR_DEBUG_NOT_ALLOWED);
+    }
+    if args.len() == 2 && is(&args[1], "PANIC") {
+        panic!("DEBUG PANIC called by client {}", ctx.client.id);
+    }
+    Frame::error(format!(
+        "ERR unknown subcommand or wrong number of arguments for '{}'. Try DEBUG HELP.",
+        lossy(&args[1])
+    ))
 }

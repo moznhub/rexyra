@@ -74,6 +74,7 @@ pub async fn serve_with(
     server.lfu_decay_time = config.lfu_decay_time;
     server.meter = MemoryMeter::Allocator(allocated_bytes);
     server.protected_mode = config.protected_mode;
+    server.enable_debug_command = config.enable_debug_command;
     for user in &config.users {
         server
             .acl
