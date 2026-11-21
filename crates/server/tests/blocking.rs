@@ -149,19 +149,23 @@ async fn pipelined_commands_after_a_blocking_one_wait_their_turn() {
     let mut pusher = Client::connect(addr).await;
 
     waiter
-        .block("SET before 1\r\nBLPOP q 0\r\nLLEN q\r\nBLPOP q2 0\r\nPING")
+        .send("SET before 1\r\nBLPOP q 0\r\nLLEN q\r\nBLPOP q2 0\r\nPING")
         .await;
-    // Replies before the blocking command are held back with it, exactly as
-    // the batch was sent; nothing has arrived yet.
+    // Replies before the blocking command are sent while it waits, as in
+    // Redis; nothing after it has run yet.
+    waiter.expect("+OK\r\n").await;
+    waiter.expect_silence().await;
     pusher.check("GET before", "$1\r\n1\r\n").await;
 
     // The pusher's own pipeline sees the element already taken.
     pusher.check("RPUSH q a\r\nLLEN q", ":1\r\n:0\r\n").await;
+    // The waiter has gone on to the next blocking command.
+    waiter.expect("*2\r\n$1\r\nq\r\n$1\r\na\r\n:0\r\n").await;
     waiter.expect_silence().await;
 
     pusher.check("RPUSH q2 b", ":1\r\n").await;
     waiter
-        .expect("+OK\r\n*2\r\n$1\r\nq\r\n$1\r\na\r\n:0\r\n*2\r\n$2\r\nq2\r\n$1\r\nb\r\n+PONG\r\n")
+        .expect("*2\r\n$2\r\nq2\r\n$1\r\nb\r\n+PONG\r\n")
         .await;
 }
 
