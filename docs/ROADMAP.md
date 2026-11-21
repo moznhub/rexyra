@@ -7,7 +7,7 @@ Sizes are relative: **S** is a few focused hours, **M** a few days, **L** a week
 | Milestone | Theme | Size |
 |---|---|---|
 | [0.2.0](#020-loose-ends) | Loose ends of the service and installer release | S |
-| [0.3.0](#030-pubsub) | Pub/Sub | L |
+| [0.3.0](#030-pubsub) | Pub/Sub (released) | L |
 | [0.4.0](#040-client-libraries-and-keyspace-notifications) | Client libraries and keyspace notifications | L |
 | [0.5.0](#050-settings-that-survive-and-a-server-you-can-leave-alone) | Settings that survive a restart, and day-to-day operation | M |
 | [Later](#later) | TLS, more commands, the limits of the snapshot design | |
