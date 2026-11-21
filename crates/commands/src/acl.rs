@@ -198,6 +198,21 @@ fn subcommands(command: &str) -> Option<Subcommands> {
         .map(|(_, subs)| *subs)
 }
 
+/// The categories a command is in, in the order Redis lists them in
+/// `COMMAND INFO`.
+/// A container's subcommands have categories of their own; the container
+/// itself is only `@slow`, and `COMMAND` also `@connection`.
+pub(crate) fn categories(spec: &CommandSpec) -> Vec<&'static str> {
+    match (spec.name, subcommands(spec.name)) {
+        ("command", _) => vec!["slow", "connection"],
+        (_, Some(_)) => vec!["slow"],
+        _ => CATEGORIES
+            .into_iter()
+            .filter(|category| in_category(spec, None, category))
+            .collect(),
+    }
+}
+
 /// Whether a command, or one subcommand of a container, is in a category.
 fn in_category(spec: &CommandSpec, sub: Option<&str>, category: &str) -> bool {
     if let (Some(subs), Some(sub)) = (subcommands(spec.name), sub) {
@@ -206,19 +221,24 @@ fn in_category(spec: &CommandSpec, sub: Option<&str>, category: &str) -> bool {
         }
     }
     let flag = |flag: &str| spec.flags.contains(&flag);
+    let sort = matches!(spec.name, "sort" | "sort_ro");
     match category {
-        "read" => flag("readonly"),
+        // The read-only script commands are not `@read`: what a script
+        // reads is checked as it runs.
+        "read" => flag("readonly") && spec.group != "scripting",
         "write" => flag("write"),
         "fast" => flag("fast"),
         "slow" => !flag("fast"),
         "blocking" => flag("blocking"),
-        "admin" => flag("admin"),
+        "admin" => flag("admin") || spec.name == "lastsave",
         "dangerous" => flag("admin") || DANGEROUS.contains(&spec.name),
         "keyspace" => {
-            (spec.group == "generic" && !spec.name.starts_with("sort"))
+            (spec.group == "generic" && !sort)
                 || matches!(spec.name, "flushall" | "flushdb" | "dbsize")
         }
-        "sortedset" => spec.group == "sorted-set",
+        // SORT works on all three kinds of collection.
+        "set" | "list" if sort => true,
+        "sortedset" => spec.group == "sorted-set" || sort,
         "transaction" => spec.group == "transactions",
         "string" | "list" | "hash" | "set" | "bitmap" | "connection" | "scripting" | "pubsub" => {
             spec.group == category

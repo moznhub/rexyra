@@ -18,6 +18,7 @@ All notable changes to Rexyra are recorded here. The format follows [Keep a Chan
 
 ### Fixed
 
+- `COMMAND INFO` lists every ACL category of a command, as Redis does (`@read @string @fast` for `GET`), instead of only its group. `SORT` and `SORT_RO` are now also in `@set`, `@sortedset` and `@list`, `LASTSAVE` in `@admin`, and `EVAL_RO`, `EVALSHA_RO` and `FCALL_RO` no longer in `@read`, which `ACL CAT` and user permissions follow. All 190 commands and all 21 categories were compared with Redis 7.4.
 - **An internal error now gets the service restarted.** If the thread that runs commands failed, the server used to shut down as if asked to, with exit code 0, so Windows did not restart the service. Now an internal error on any thread is logged and the process exits with code 70, which the service manager treats as a crash and restarts from the data on disk.
 
 ## [0.2.0] - 2026-11-21
