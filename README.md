@@ -5,11 +5,11 @@
 
 A Redis-compatible in-memory data server for Windows, written in Rust.
 
-Rexyra speaks the Redis protocol (RESP2 and RESP3) and implements 180 Redis commands, so existing Redis tools and client libraries can talk to it. It runs as a single native Windows executable: no WSL, no Docker, no runtime to install.
+Rexyra speaks the Redis protocol (RESP2 and RESP3) and implements 189 Redis commands, so existing Redis tools and client libraries can talk to it. It runs as a single native Windows executable: no WSL, no Docker, no runtime to install.
 
 ## Highlights
 
-- **Redis-compatible.** Strings, hashes, lists, sets, sorted sets, bitmaps, expiry, transactions, blocking commands, Lua scripting and functions. Replies and error messages are checked against Redis 7.4.
+- **Redis-compatible.** Strings, hashes, lists, sets, sorted sets, bitmaps, expiry, transactions, blocking commands, Pub/Sub, Lua scripting and functions. Replies and error messages are checked against Redis 7.4.
 - **Durable, and interchangeable with Redis.** RDB snapshots and an append-only file in Redis's own formats: Redis loads Rexyra's files and Rexyra loads Redis's.
 - **Background saves without `fork`.** A point-in-time snapshot is written while commands keep running. Measured under load, throughput during a save is within a few percent of normal.
 - **Memory limit and eviction.** `maxmemory` with the eight Redis eviction policies, measured against what the process has actually allocated.
@@ -98,6 +98,7 @@ msiexec /i rexyra-vX.Y.Z-windows-x86_64.msi /qn PORT=6380 INSTALLFOLDER="D:\Rexy
 |-------|----------|
 | Connection | `PING` `ECHO` `HELLO` `AUTH` `SELECT` `QUIT` `RESET` `CLIENT` (`ID`, `GETNAME`, `SETNAME`, `SETINFO`, `LIST`, `INFO`, `KILL`, `UNBLOCK`, `NO-EVICT`, `NO-TOUCH`) |
 | Server | `COMMAND` (`COUNT`, `LIST`, `INFO`, `DOCS`) `DBSIZE` `FLUSHDB` `FLUSHALL` `INFO` `CONFIG` (`GET`, `SET`, `RESETSTAT`) `SLOWLOG` (`GET`, `LEN`, `RESET`) `MEMORY` (`USAGE`) `ACL` (`SETUSER`, `GETUSER`, `DELUSER`, `LIST`, `USERS`, `WHOAMI`, `CAT`, `GENPASS`, `DRYRUN`) `TIME` `SAVE` `LASTSAVE` `SHUTDOWN` `BGSAVE` `BGREWRITEAOF` |
+| Pub/Sub | `SUBSCRIBE` `UNSUBSCRIBE` `PSUBSCRIBE` `PUNSUBSCRIBE` `SSUBSCRIBE` `SUNSUBSCRIBE` `PUBLISH` `SPUBLISH` `PUBSUB` (`CHANNELS`, `NUMSUB`, `NUMPAT`, `SHARDCHANNELS`, `SHARDNUMSUB`, `HELP`) |
 | Transactions | `MULTI` `EXEC` `DISCARD` `WATCH` `UNWATCH` |
 | Scripting | `EVAL` `EVALSHA` `EVAL_RO` `EVALSHA_RO` `SCRIPT` (`LOAD`, `EXISTS`, `FLUSH`, `KILL`) `FCALL` `FCALL_RO` `FUNCTION` (`LOAD`, `DELETE`, `FLUSH`, `LIST`, `STATS`, `KILL`, `DUMP`, `RESTORE`) |
 | Keys | `DEL` `UNLINK` `EXISTS` `TOUCH` `TYPE` `RENAME` `RENAMENX` `COPY` `KEYS` `SCAN` `RANDOMKEY` `SORT` `SORT_RO` `DUMP` `RESTORE` `OBJECT` (`ENCODING`, `REFCOUNT`, `IDLETIME`, `FREQ`) |

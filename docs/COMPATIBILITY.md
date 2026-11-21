@@ -52,7 +52,7 @@ Rexyra is a single-instance server. Replication, Sentinel, cluster mode, streams
 
 - A subscriber whose unread output passes 32 MB, or stays over 8 MB for 60 seconds, is disconnected: Redis's default `client-output-buffer-limit` for the `pubsub` class. The limit cannot be changed yet, and ordinary clients have none, as in Redis by default.
 - `COMMAND INFO` lists no key positions for `SSUBSCRIBE`, `SUNSUBSCRIBE` and `SPUBLISH`. Redis describes their shard channels as keys (for cluster routing) flagged as not really keys.
-- The order of the channels in `PUBSUB CHANNELS` and of the replies to `UNSUBSCRIBE` without arguments is by name; in Redis it is unspecified.
+- The order of the channels in `PUBSUB CHANNELS` and of the replies to `UNSUBSCRIBE` without arguments is by name, and `ACL CAT pubsub` lists the commands in table order; in Redis these orders are unspecified.
 
 ## Memory limit
 
