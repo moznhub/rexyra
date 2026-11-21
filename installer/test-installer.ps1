@@ -75,6 +75,24 @@ function Send-Commands([string[]] $commands) {
     }
 }
 
+# The value of one setting, from CONFIG GET's reply of two bulk strings.
+function Get-Setting([string] $name) {
+    $client = [System.Net.Sockets.TcpClient]::new()
+    $client.Connect('127.0.0.1', $Port)
+    try {
+        $stream = $client.GetStream()
+        $stream.ReadTimeout = 5000
+        $reader = [System.IO.StreamReader]::new($stream)
+        $bytes = [System.Text.Encoding]::ASCII.GetBytes("CONFIG GET $name`r`n")
+        $stream.Write($bytes, 0, $bytes.Length)
+        # *2, then the name and the value, each after its length line.
+        $lines = 1..5 | ForEach-Object { $reader.ReadLine() }
+        $lines[4]
+    } finally {
+        $client.Close()
+    }
+}
+
 function Wait-ForServer {
     foreach ($attempt in 1..50) {
         try { if ((Send-Commands 'PING') -eq '+PONG') { return $true } } catch { Start-Sleep -Milliseconds 200 }
@@ -149,6 +167,21 @@ try {
     Check 'the configuration file is kept' ((Get-Content $config) -contains "port $Port")
     Check 'the server answers on its port' (Wait-ForServer)
     Check 'with its data' ((Send-Commands 'GET installer:check') -eq 'kept')
+
+    Write-Host '== CONFIG REWRITE saves a change for the next start'
+    # The service account has to be able to replace its own configuration file.
+    $original = Get-Content $config -Raw
+    $replies = Send-Commands 'CONFIG SET maxmemory-policy allkeys-lru', 'CONFIG REWRITE'
+    Check 'the file is rewritten' (($replies -join ' ') -eq '+OK +OK') ($replies -join ' ')
+    Check 'with the change' ((Get-Content $config) -contains 'maxmemory-policy allkeys-lru')
+    Check 'and the port kept' ((Get-Content $config) -contains "port $Port")
+    Restart-Service Rexyra
+    Check 'the server starts from the rewritten file' (Wait-ForServer)
+    $policy = Get-Setting 'maxmemory-policy'
+    Check 'with the change in effect' ($policy -eq 'allkeys-lru') $policy
+    Set-Content $config $original -NoNewline
+    Restart-Service Rexyra
+    Check 'the server answers again' (Wait-ForServer)
 
     Write-Host '== an internal error restarts the service'
     # DEBUG PANIC fails the way a bug would; it has to be allowed first.

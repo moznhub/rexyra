@@ -388,6 +388,10 @@ impl User {
         match lower.as_str() {
             "on" => self.enabled = true,
             "off" => self.enabled = false,
+            // `RESTORE` payloads are always checked here, so neither changes
+            // anything; both are accepted so that an `ACL LIST` line, which
+            // says `sanitize-payload`, can be used as a `user` line.
+            "sanitize-payload" | "skip-sanitize-payload" => {}
             "nopass" => {
                 self.nopass = true;
                 self.passwords.clear();
@@ -782,6 +786,15 @@ impl Default for Acl {
 impl Acl {
     pub fn user(&self, name: &str) -> Option<&User> {
         self.users.get(name)
+    }
+
+    /// Every user as a `user` line of a configuration file, as `ACL LIST`
+    /// gives them.
+    pub(crate) fn config_lines(&self) -> Vec<String> {
+        self.users
+            .iter()
+            .map(|(name, user)| user.describe(name))
+            .collect()
     }
 
     fn default_user(&self) -> &User {
@@ -1295,6 +1308,29 @@ mod tests {
         );
         h.run("RESET");
         assert_eq!(h.run("PING"), Frame::simple("PONG"));
+    }
+
+    /// `CONFIG REWRITE` saves users as their `ACL LIST` lines, so each one
+    /// has to give the same user when it is read back.
+    #[test]
+    fn an_acl_list_line_reads_back_as_the_same_user() {
+        let mut h = Harness::new();
+        for rules in [
+            "on >pw ~k* &news:* +get +set|x -@admin",
+            "off nopass allkeys allchannels +@all -flushall",
+            "on skip-sanitize-payload %R~read:* %W~write:* +@read",
+        ] {
+            let mut setuser = vec!["ACL", "SETUSER", "u"];
+            setuser.extend(rules.split(' '));
+            assert_eq!(h.cmd(&setuser), Frame::ok(), "{rules}");
+            let line = h.server.acl.config_lines().remove(1);
+            assert_eq!(h.cmd(&["ACL", "DELUSER", "u"]), Frame::Integer(1));
+            let mut again = vec!["ACL", "SETUSER"];
+            again.extend(line.split(' ').skip(1));
+            assert_eq!(h.cmd(&again), Frame::ok(), "{line}");
+            assert_eq!(h.server.acl.config_lines()[1], line);
+            assert_eq!(h.cmd(&["ACL", "DELUSER", "u"]), Frame::Integer(1));
+        }
     }
 
     #[test]

@@ -9,6 +9,7 @@ All notable changes to Rexyra are recorded here. The format follows [Keep a Chan
 - **Pub/Sub**: `SUBSCRIBE`, `PSUBSCRIBE`, `SSUBSCRIBE`, `UNSUBSCRIBE`, `PUNSUBSCRIBE`, `SUNSUBSCRIBE`, `PUBLISH`, `SPUBLISH` and `PUBSUB`, in RESP2 and RESP3, with channel permissions for ACL users and Redis's default output limit for subscribers that do not read. `CLIENT LIST` shows subscriptions and output waiting to be written, and `INFO` counts channels and patterns.
 - Tests with the StackExchange.Redis client library (versions 2.12 and 3.4), run in CI: [clients/README.md](https://github.com/moznhub/rexyra/blob/main/clients/README.md).
 - `DEBUG PANIC`, behind the new `enable-debug-command` setting (`no` by default, as in Redis), to test what happens after an internal error.
+- **`CONFIG REWRITE`**, which writes the settings changed with `CONFIG SET`, and the users made with `ACL SETUSER`, to the configuration file, so that they survive a restart. As in Redis, comments, order and lines it does not know are kept; Windows paths are written as they are, without doubled backslashes.
 - **Log rotation.** When the log file reaches `logfile-max-size` (100 MB by default) it is renamed `rexyra.1.log`, the earlier ones move up a number, and a new file is started; `logfile-max-files` (5 by default) are kept and the oldest deleted. If another program holds the file so that it cannot be renamed, the log carries on in it and the server tries again later.
 
 ### Changed
@@ -18,6 +19,7 @@ All notable changes to Rexyra are recorded here. The format follows [Keep a Chan
 
 ### Fixed
 
+- `ACL SETUSER`, and so a `user` line in the configuration file, accepts `sanitize-payload` and `skip-sanitize-payload`, as Redis does. Every `ACL LIST` line says `sanitize-payload`, so before this one could not be used as a `user` line.
 - `COMMAND INFO` lists every ACL category of a command, as Redis does (`@read @string @fast` for `GET`), instead of only its group. `SORT` and `SORT_RO` are now also in `@set`, `@sortedset` and `@list`, `LASTSAVE` in `@admin`, and `EVAL_RO`, `EVALSHA_RO` and `FCALL_RO` no longer in `@read`, which `ACL CAT` and user permissions follow. All 190 commands and all 21 categories were compared with Redis 7.4.
 - **An internal error now gets the service restarted.** If the thread that runs commands failed, the server used to shut down as if asked to, with exit code 0, so Windows did not restart the service. Now an internal error on any thread is logged and the process exits with code 70, which the service manager treats as a crash and restarts from the data on disk.
 
