@@ -164,6 +164,16 @@ fn run(
         return Err(why);
     }
 
+    // Before listening, so that no client is accepted by a server that
+    // cannot save what it is given.
+    if let Err(why) = rexyra_server::check_data_folder(&config.dir) {
+        error!("{why}");
+        if !config.logfile.is_empty() {
+            eprintln!("rexyra-server: {why}");
+        }
+        return Err(why);
+    }
+
     if !config.ignored.is_empty() {
         warn!(
             directives = %config.ignored.join(", "),

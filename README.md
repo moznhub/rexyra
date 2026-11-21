@@ -64,7 +64,7 @@ rexyra-server.exe rexyra.conf --port 7000
 | `--bind`, `--port` | Address and port to listen on | `127.0.0.1`, `6379` |
 | `--requirepass` | Password clients must give with `AUTH` | none |
 | `--protected-mode` | Without a password, accept only local connections | `yes` |
-| `--dir`, `--dbfilename` | Where the snapshot is kept | `.`, `dump.rdb` |
+| `--dir`, `--dbfilename` | Where the snapshot is kept. The folder must exist: as in Redis, the server will not start without it. | `.`, `dump.rdb` |
 | `--logfile` | File the log is written to | standard error |
 | `--logfile-max-size`, `--logfile-max-files` | Size at which the log file is started afresh, and how many earlier ones (`rexyra.1.log`, ...) are kept; `0` never rolls it | `100mb`, `5` |
 | `--save` | Automatic snapshots, as `seconds changes` pairs | `3600 1 300 100 60 10000` |

@@ -58,7 +58,7 @@ Restart-Service Rexyra
 Get-Service Rexyra
 ```
 
-**Changing a setting.** Edit `C:\ProgramData\Rexyra\rexyra.conf` (as administrator) and restart the service. Every setting is described in the [README](../README.md#configuration). Write a path without quotes, or in single quotes if it contains spaces: inside double quotes a backslash starts an escape sequence, as in `redis.conf`, so `"C:\Rexyra\data"` does not mean what it looks like.
+**Changing a setting.** Edit `C:\ProgramData\Rexyra\rexyra.conf` (as administrator) and restart the service. Every setting is described in the [README](../README.md#configuration). Write a path without quotes, or in single quotes if it contains spaces: inside double quotes a backslash starts an escape sequence, as in `redis.conf`, so `"C:\Rexyra\data"` does not mean what it looks like. If `dir` names a folder that does not exist, the service does not start, and says why (below).
 
 **If the service does not start.** Look at the end of `logs\rexyra.log`. If the mistake is in `rexyra.conf` itself, the server cannot know where its log is, so it writes the reason to `rexyra-startup-error.txt` beside the configuration file instead. Running the server in a terminal shows the same message:
 
