@@ -1,11 +1,11 @@
-use std::fs::OpenOptions;
 use std::future::Future;
-use std::io::{IsTerminal, Write};
+use std::io::IsTerminal;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Mutex;
 
 use rexyra_server::config::{ArgsOutcome, Config, USAGE};
+use rexyra_server::logfile::RotatingLog;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
@@ -135,15 +135,13 @@ fn start_logging(config: &Config) -> Result<(), String> {
             .init();
         return Ok(());
     }
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&config.logfile)
-        .map_err(|e| format!("cannot open the log file '{}': {e}", config.logfile))?;
-    // A blank line sets one run apart from the one before.
-    if file.metadata().is_ok_and(|meta| meta.len() > 0) {
-        let _ = file.write_all(b"\n");
-    }
+    let mut file = RotatingLog::open(
+        &config.logfile,
+        config.logfile_max_size,
+        config.logfile_max_files,
+    )
+    .map_err(|e| format!("cannot open the log file '{}': {e}", config.logfile))?;
+    let _ = file.begin_run();
     tracing_subscriber::fmt()
         .with_writer(Mutex::new(file))
         .with_ansi(false)

@@ -6,6 +6,7 @@
 pub mod config;
 mod connection;
 pub mod executor;
+pub mod logfile;
 
 use std::future::Future;
 use std::io;

@@ -20,7 +20,7 @@ What ends up where:
 | `C:\Program Files\Rexyra\` | The program and its documentation. |
 | `C:\ProgramData\Rexyra\rexyra.conf` | The settings. Edit this file and restart the service to change them. |
 | `C:\ProgramData\Rexyra\data\` | The snapshot and, if turned on, the append-only file. |
-| `C:\ProgramData\Rexyra\logs\rexyra.log` | The log. |
+| `C:\ProgramData\Rexyra\logs\rexyra.log` | The log. When it reaches 100 MB it is renamed `rexyra.1.log` and a new one started; five earlier files are kept, the oldest deleted. `logfile-max-size` and `logfile-max-files` in `rexyra.conf` change that. |
 
 The service runs as `LocalService`, an account with few rights, which is allowed to write to `C:\ProgramData\Rexyra` and nowhere else of note. It listens on `127.0.0.1`, so only programs on the same machine can connect until you [say otherwise](#other-machines).
 
