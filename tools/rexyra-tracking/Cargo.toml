@@ -1,0 +1,13 @@
+[package]
+name = "rexyra-tracking"
+description = "Records what several connections receive while a script of commands runs, to compare client-side caching (CLIENT TRACKING) in rexyra-server with Redis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -93,10 +93,12 @@ fn section(ctx: &mut Ctx<'_>, name: &str, out: &mut String) {
                 "# Clients\r\n\
                  connected_clients:{}\r\n\
                  maxclients:{}\r\n\
-                 blocked_clients:{}\r\n",
+                 blocked_clients:{}\r\n\
+                 tracking_clients:{}\r\n",
                 ctx.clients.len() + 1,
                 server.maxclients.load(Ordering::Relaxed),
                 server.blocked_clients,
+                server.tracking.client_count(),
             );
         }
         "memory" => {
@@ -168,6 +170,9 @@ fn section(ctx: &mut Ctx<'_>, name: &str, out: &mut String) {
                  pubsub_channels:{}\r\n\
                  pubsub_patterns:{}\r\n\
                  pubsubshard_channels:{}\r\n\
+                 tracking_total_keys:{}\r\n\
+                 tracking_total_items:{}\r\n\
+                 tracking_total_prefixes:{}\r\n\
                  total_error_replies:{}\r\n",
                 stats.connections,
                 stats.commands,
@@ -178,6 +183,9 @@ fn section(ctx: &mut Ctx<'_>, name: &str, out: &mut String) {
                 server.pubsub.channel_count(),
                 server.pubsub.pattern_count(),
                 server.pubsub.shard_channel_count(),
+                server.tracking.key_count(),
+                server.tracking.item_count(),
+                server.tracking.prefix_count(),
                 stats.error_replies,
             );
         }
@@ -300,6 +308,7 @@ const PARAMETERS: &[(&str, Access)] = &[
     ("protected-mode", Access::Mutable),
     ("enable-debug-command", Access::Immutable),
     ("notify-keyspace-events", Access::Mutable),
+    ("tracking-table-max-keys", Access::Mutable),
     ("proto-max-bulk-len", Access::Fixed),
     ("hash-max-listpack-entries", Access::Fixed),
     ("hash-max-listpack-value", Access::Fixed),
@@ -352,6 +361,7 @@ fn parameter_value(ctx: &Ctx<'_>, name: &str) -> String {
         "protected-mode" => yes_no(server.protected_mode),
         "enable-debug-command" => server.enable_debug_command.name().to_owned(),
         "notify-keyspace-events" => crate::notify::format(server.notify_flags),
+        "tracking-table-max-keys" => server.tracking.max_keys.to_string(),
         "proto-max-bulk-len" => (512 * 1024 * 1024).to_string(),
         "hash-max-listpack-entries" => HASH_COMPACT_MAX_ENTRIES.to_string(),
         "set-max-intset-entries" => INTSET_MAX_ENTRIES.to_string(),
@@ -407,6 +417,7 @@ enum Change {
     ProtectedMode(bool),
     SaveDelay(u64),
     NotifyFlags(u32),
+    TrackingMaxKeys(u64),
 }
 
 fn config_set(ctx: &mut Ctx<'_>, pairs: &[Bytes]) -> Result<Frame, Frame> {
@@ -524,6 +535,7 @@ fn config_set(ctx: &mut Ctx<'_>, pairs: &[Bytes]) -> Result<Frame, Frame> {
             "rdb-key-save-delay" if number >= 0 => Change::SaveDelay(number as u64),
             "maxmemory-samples" if (1..=64).contains(&number) => Change::Samples(number as usize),
             "maxmemory-samples" => return Err(out_of_range(1, 64)),
+            "tracking-table-max-keys" if number >= 0 => Change::TrackingMaxKeys(number as u64),
             "lfu-log-factor" if (0..=i64::from(i32::MAX)).contains(&number) => {
                 Change::LfuLogFactor(number as u32)
             }
@@ -574,7 +586,12 @@ fn config_set(ctx: &mut Ctx<'_>, pairs: &[Bytes]) -> Result<Frame, Frame> {
                 ctx.server.notify_flags = flags;
                 crate::notify::sync(ctx.server, ctx.keyspace);
             }
-            Change::MaxMemory(bytes) => ctx.server.maxmemory = bytes,
+            Change::MaxMemory(bytes) => {
+                ctx.server.maxmemory = bytes;
+                // A lower limit is enforced at once, as in Redis.
+                ctx.server.oom = crate::memory::free_memory(ctx);
+            }
+            Change::TrackingMaxKeys(keys) => ctx.server.tracking.max_keys = keys,
             Change::Policy(policy) => ctx.server.maxmemory_policy = policy,
             Change::Samples(samples) => ctx.server.maxmemory_samples = samples,
             Change::LfuLogFactor(factor) => {

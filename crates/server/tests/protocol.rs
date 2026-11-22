@@ -114,7 +114,7 @@ async fn hello_switches_to_resp3() {
     c.roundtrip(b"CLIENT GETNAME\r\n", "$-1\r\n").await;
     c.roundtrip(
         b"*2\r\n$5\r\nHELLO\r\n$1\r\n3\r\n",
-        "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$5\r\n7.2.0\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n",
+        "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$5\r\n7.4.0\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n",
     )
     .await;
     // Skip the rest of the HELLO map by issuing a command with a known reply.

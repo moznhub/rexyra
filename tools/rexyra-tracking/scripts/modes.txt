@@ -1,0 +1,122 @@
+## 1. RESP2 redirect to a Pub/Sub client
+r: CLIENT ID
+r: SUBSCRIBE __redis__:invalidate
+t: CLIENT TRACKING ON REDIRECT 1000
+t: CLIENT ID
+t: CLIENT TRACKING ON REDIRECT $r
+t: GET k
+w: SET k 1
+~drain
+t: GET k
+w: FLUSHALL
+~drain
+## 2. RESP2 redirect target subscribed to some other channel only
+r2: SUBSCRIBE other
+t2: CLIENT TRACKING ON REDIRECT $r2
+t2: GET k2
+w: SET k2 1
+~drain
+## 3. RESP2 tracking without redirect
+t3: CLIENT TRACKING ON
+t3: GET k3
+w: SET k3 1
+~drain
+t3: CLIENT TRACKINGINFO
+## 4. RESP3 client redirecting to a RESP3 client that is not subscribed
+r4: HELLO 3 @@ proto id
+r4: CLIENT ID
+t4: HELLO 3 @@ proto id
+t4: CLIENT TRACKING ON REDIRECT $r4
+t4: GET k4
+w: SET k4 1
+~drain
+t4: CLIENT TRACKINGINFO
+t4: CLIENT GETREDIR
+t4: CLIENT INFO @@ id flags redir resp
+## 5. Redirect target goes away
+w: CLIENT KILL ID $r4
+t4: GET k4
+w: SET k4 2
+~drain
+t4: CLIENT TRACKINGINFO
+t4: CLIENT INFO @@ id flags redir resp
+t4: GET k4
+w: SET k4 3
+~drain
+## 6. BCAST with prefixes, pipelined writes
+b: HELLO 3 @@ proto id
+b: CLIENT TRACKING ON BCAST PREFIX a PREFIX b
+b: CLIENT TRACKINGINFO
+w| SET a2 1 ;; SET b1 1 ;; SET a1 1 ;; SET c1 1 ;; SET a2 2
+~drain
+w: SET a3 1
+~drain
+## BCAST: own writes, without and with NOLOOP
+b: SET a9 1
+~drain
+bn: HELLO 3 @@ proto id
+bn: CLIENT TRACKING ON BCAST NOLOOP PREFIX z
+bn| SET z1 1 ;; SET z2 1
+~drain
+w| SET z3 1 ;; SET z1 2
+~drain
+## BCAST with no prefix: everything
+ball: HELLO 3 @@ proto id
+ball: CLIENT TRACKING ON BCAST
+w: SET anything 1
+~drain
+w: FLUSHDB
+~drain
+ball: CLIENT TRACKINGINFO
+## 7. OPTIN
+o: HELLO 3 @@ proto id
+o: CLIENT TRACKING ON OPTIN
+o: GET o1
+w: SET o1 1
+~drain
+o: CLIENT CACHING YES
+o: GET o2
+w: SET o2 1
+~drain
+o: CLIENT CACHING YES
+o: GET o3
+o: GET o4
+w: MSET o3 1 o4 1
+~drain
+o| CLIENT CACHING YES ;; GET o5 ;; GET o6
+w: MSET o5 1 o6 1
+~drain
+o: CLIENT CACHING YES
+o: MULTI
+o: GET o7
+o: GET o8
+o: EXEC
+w: MSET o7 1 o8 1
+~drain
+o: CLIENT CACHING YES
+o: PING
+o: GET o9
+w: SET o9 1
+~drain
+o: CLIENT CACHING NO
+o: CLIENT TRACKINGINFO
+o: CLIENT CACHING YES
+o: CLIENT TRACKINGINFO
+## 8. OPTOUT
+oo: HELLO 3 @@ proto id
+oo: CLIENT TRACKING ON OPTOUT
+oo: GET p1
+oo: CLIENT CACHING NO
+oo: GET p2
+oo: GET p3
+w: MSET p1 1 p2 1 p3 1
+~drain
+oo: CLIENT CACHING NO
+oo: CLIENT TRACKINGINFO
+oo: CLIENT CACHING YES
+## 9. CLIENT LIST flags for everyone
+w: CLIENT LIST @@ id flags redir resp
+## 10. RESET turns tracking off
+o: RESET
+o: CLIENT TRACKINGINFO
+w: INFO clients @@ tracking_clients

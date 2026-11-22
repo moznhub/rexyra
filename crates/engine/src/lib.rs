@@ -139,6 +139,13 @@ impl Keyspace {
         }
     }
 
+    /// See [`Db::track_changes`]; applies to every database.
+    pub fn track_changes(&mut self, on: bool) {
+        for db in &mut self.dbs {
+            db.track_changes(on);
+        }
+    }
+
     /// See [`Db::take_notes`]: `(database index, note, key)`, database by
     /// database.
     pub fn take_notes(&mut self) -> Vec<(usize, Note, Bytes)> {

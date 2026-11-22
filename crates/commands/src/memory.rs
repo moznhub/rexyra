@@ -183,7 +183,7 @@ pub(crate) fn free_memory(ctx: &mut Ctx<'_>) -> bool {
         let Some((db, key)) = pick_victim(ctx.server, ctx.keyspace, ctx.now) else {
             return true;
         };
-        if ctx.keyspace.db(db).remove(&key, ctx.now) {
+        if ctx.keyspace.db(db).evict(&key, ctx.now) {
             ctx.server.stats.evicted_keys += 1;
             // The key is gone for good, so the log has to say so.
             if let Some(aof) = &mut ctx.server.aof {

@@ -1,0 +1,75 @@
+## 1. Notification vs invalidation order on one RESP3 client
+a: HELLO 3 @@ proto id
+a: CONFIG SET notify-keyspace-events KEA
+a: CLIENT TRACKING ON
+a: PSUBSCRIBE __keyspace@0__:*
+a: GET n1
+w: SET n1 1
+~drain
+## 2. Active expiry
+a: GET ax
+w: SET ax v PX 200
+~drain
+a: GET ax
+~sleep 700
+~drain
+## 3. Lazy expiry seen by the tracking client itself
+w: SET lx v PX 50
+a: GET lx
+~sleep 200
+a: GET lx
+~drain
+w: SET lx v
+~drain
+## 4. Hash field expiry
+w: HSET hf a 1 b 2
+a: HGETALL hf
+w: HPEXPIRE hf 100 FIELDS 1 a
+~drain
+a: HGETALL hf
+~sleep 400
+~drain
+## 5. Eviction (of one key: with more, the order is random)
+w: FLUSHALL
+~drain
+w: CONFIG SET maxmemory-policy allkeys-random
+w: SET big1 x
+a: GET big1
+w: CONFIG SET maxmemory 1
+w: SET big2 y
+~drain
+w: CONFIG SET maxmemory 0
+## 6. OPTIN read inside a script
+o: HELLO 3 @@ proto id
+o: CLIENT TRACKING ON OPTIN
+o: CLIENT CACHING YES
+o: EVAL "return redis.call('GET', KEYS[1])" 1 os1
+o: EVAL "return redis.call('GET', KEYS[1])" 1 os2
+w: MSET os1 1 os2 1
+~drain
+## 7. BCAST: writes inside MULTI and by the expiry cycle
+b: HELLO 3 @@ proto id
+b: CLIENT TRACKING ON BCAST PREFIX m
+w: MULTI
+w: SET m2 1
+w: SET m1 1
+w: EXEC
+~drain
+w: SET mexp v PX 100
+~sleep 500
+~drain
+## 8. Blocked client served by a push
+a: GET bq
+q! BLPOP bq 5
+~sleep 100
+w: LPUSH bq x
+~sleep 100
+~drain
+## 9. HELLO 2 while tracking in RESP3 (no redirect)
+h: HELLO 3 @@ proto id
+h: CLIENT TRACKING ON
+h: GET hk
+h: HELLO 2 @@ proto id
+w: SET hk 1
+~drain
+h: CLIENT TRACKINGINFO

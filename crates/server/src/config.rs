@@ -51,6 +51,9 @@ pub struct Config {
     /// The keyspace notifications to publish (`notify-keyspace-events`),
     /// as `rexyra_commands::notify` flags; none by default.
     pub notify_keyspace_events: u32,
+    /// The most keys client-side caching remembers before it invalidates
+    /// some to make room (`tracking-table-max-keys`); zero for no limit.
+    pub tracking_table_max_keys: u64,
     /// `user` lines: a name followed by `ACL SETUSER` rules.
     pub users: Vec<Vec<String>>,
     /// The configuration file this was read from, if any.
@@ -89,6 +92,7 @@ impl Default for Config {
             protected_mode: true,
             enable_debug_command: rexyra_commands::DebugCommand::No,
             notify_keyspace_events: 0,
+            tracking_table_max_keys: rexyra_commands::tracking::DEFAULT_MAX_KEYS,
             users: Vec::new(),
             config_file: None,
             ignored: Vec::new(),
@@ -253,6 +257,14 @@ impl Config {
             "slowlog-max-len" => {
                 let value = single()?;
                 self.slowlog_max_len = value.parse().map_err(|_| invalid(value))?;
+            }
+            "tracking-table-max-keys" => {
+                let value = single()?;
+                self.tracking_table_max_keys = value
+                    .parse()
+                    .ok()
+                    .filter(|&n| i64::try_from(n).is_ok())
+                    .ok_or_else(|| invalid(value))?;
             }
             // `save 900 1` adds a save point; the first one replaces the
             // defaults, and `save ""` turns automatic saving off.
@@ -747,6 +759,7 @@ mod tests {
                  requirepass \"two words\"\n\
                  protected-mode no\n\
                  notify-keyspace-events \"Elx\"\n\
+                 tracking-table-max-keys 5000\n\
                  user worker on >pw ~jobs:* +@list\n",
             )
             .unwrap();
@@ -784,6 +797,7 @@ mod tests {
                 notify_keyspace_events: rexyra_commands::notify::KEYEVENT
                     | rexyra_commands::notify::LIST
                     | rexyra_commands::notify::EXPIRED,
+                tracking_table_max_keys: 5000,
                 users: vec![["worker", "on", ">pw", "~jobs:*", "+@list"]
                     .map(str::to_owned)
                     .to_vec()],

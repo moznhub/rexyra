@@ -564,11 +564,16 @@ pub(crate) fn propagate(
 
 /// Periodic work for the append-only file: logs keys removed by active
 /// expiry, writes and syncs the log, and starts a rewrite when it is due.
-pub fn tick(server: &mut Server, keyspace: &mut Keyspace, now: u64) {
+pub fn tick(
+    server: &mut Server,
+    keyspace: &mut Keyspace,
+    peers: &crate::tracking::Peers<'_>,
+    now: u64,
+) {
     if server.aof.is_none() {
         return;
     }
-    crate::notify::flush(server, keyspace);
+    crate::notify::flush(server, keyspace, peers);
     let Some(aof) = &mut server.aof else {
         return;
     };
@@ -1157,7 +1162,12 @@ mod tests {
         h.advance(20);
         assert_eq!(h.run("HGET r k"), Frame::Null);
         h.keyspace.cron(h.now, 100);
-        tick(&mut h.server, &mut h.keyspace, h.now);
+        tick(
+            &mut h.server,
+            &mut h.keyspace,
+            &crate::tracking::Peers::none(&h.clients),
+            h.now,
+        );
         // Then the key is made again, without the field.
         h.run("HSET whole z 2");
         // A sort that reads a field past its time before it is reclaimed.
@@ -1324,7 +1334,12 @@ mod tests {
         h.advance(500);
         // Nobody reads the key; the background cycle removes it.
         h.keyspace.cron(h.now, 100);
-        tick(&mut h.server, &mut h.keyspace, h.now);
+        tick(
+            &mut h.server,
+            &mut h.keyspace,
+            &crate::tracking::Peers::none(&h.clients),
+            h.now,
+        );
         assert!(log_text(&mut h).contains("DEL $4 temp"));
         fs::remove_dir_all(dir).unwrap();
     }
@@ -1603,7 +1618,14 @@ mod tests {
         let mut h = start(&dir);
         h.server.aof_settings.rewrite_percentage = 100;
         h.server.aof_settings.rewrite_min_size = 2_000;
-        let tick_now = |h: &mut Harness| tick(&mut h.server, &mut h.keyspace, h.now);
+        let tick_now = |h: &mut Harness| {
+            tick(
+                &mut h.server,
+                &mut h.keyspace,
+                &crate::tracking::Peers::none(&h.clients),
+                h.now,
+            )
+        };
 
         h.run("SET k v");
         tick_now(&mut h);
@@ -1663,7 +1685,12 @@ mod tests {
             "a save, not a rewrite"
         );
         finish_rewrite(&mut h);
-        tick(&mut h.server, &mut h.keyspace, h.now);
+        tick(
+            &mut h.server,
+            &mut h.keyspace,
+            &crate::tracking::Peers::none(&h.clients),
+            h.now,
+        );
         assert!(h.server.aof.as_ref().unwrap().is_rewriting());
 
         // While a rewrite runs: BGSAVE is refused unless scheduled, ...

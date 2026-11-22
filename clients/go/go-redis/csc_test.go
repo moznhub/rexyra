@@ -17,7 +17,6 @@ import (
 // connection, serves repeated GETs from its own cache, and drops an entry when
 // the server pushes an "invalidate" message (RESP3).
 func TestClientSideCache(t *testing.T) {
-	skipOnRexyra(t, "CLIENT TRACKING is not implemented, so go-redis silently turns client-side caching off")
 	defer guard(t)
 	p := prefix()
 	opt := options(3)

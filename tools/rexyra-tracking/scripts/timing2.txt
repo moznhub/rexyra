@@ -1,0 +1,37 @@
+## A. Field expiry by the cycle, hash tracked after the TTL was set
+a: HELLO 3 @@ proto id
+a: CLIENT TRACKING ON
+w: HSET hf a 1 b 2
+w: HPEXPIRE hf 1500 FIELDS 1 a
+a: HGETALL hf
+~sleep 2500
+~drain
+a: HGETALL hf
+## B. Field expiry found by a read (cycle off)
+w: DEBUG SET-ACTIVE-EXPIRE 0
+w: HSET hg a 1 b 2
+w: HPEXPIRE hg 1500 FIELDS 1 a
+a: HGETALL hg
+~sleep 2000
+w: HGET hg a
+~drain
+## C. Key expiry found by the tracking client's own read (cycle off)
+w: SET kx v PX 1500
+a: GET kx
+~sleep 2000
+a: GET kx
+~drain
+w: SET kx v2
+~drain
+## D. Key expiry found by another client's read (cycle off)
+w: SET ky v PX 1500
+a: GET ky
+~sleep 2000
+w: GET ky
+~drain
+w: DEBUG SET-ACTIVE-EXPIRE 1
+## E. Key expiry by the cycle, tracked key
+w: SET kz v PX 1500
+a: GET kz
+~sleep 2500
+~drain

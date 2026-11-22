@@ -1,0 +1,172 @@
+## Invalidations and keyspace notifications on one client that both tracks
+## and is subscribed to every keyspace event: which comes first, for a
+## representative set of writes.
+a: HELLO 3 @@ proto id
+a: CONFIG SET notify-keyspace-events KEA
+a: CLIENT TRACKING ON
+a: PSUBSCRIBE __keyspace@0__:*
+## SET
+a: GET o1
+w: SET o1 1
+~drain
+## INCR
+w: SET i 1
+a: GET i
+w: INCR i
+~drain
+## LPUSH to an existing list
+w: RPUSH l x
+a: LRANGE l 0 -1
+w: LPUSH l y
+~drain
+## HSET to an existing hash
+w: HSET h f 1
+a: HGETALL h
+w: HSET h g 2
+~drain
+## SADD
+w: SADD s x
+a: SMEMBERS s
+w: SADD s y
+~drain
+## ZADD
+w: ZADD z 1 a
+a: ZRANGE z 0 -1
+w: ZADD z 2 b
+~drain
+## DEL
+w: SET d 1
+a: GET d
+w: DEL d
+~drain
+## RENAME
+w: SET r1 1
+a: MGET r1 r2
+w: RENAME r1 r2
+~drain
+## EXPIRE
+w: SET e 1
+a: GET e
+w: EXPIRE e 100
+~drain
+## SORT ... STORE
+w: RPUSH src 3 1 2
+a: LRANGE dst 0 -1
+w: SORT src STORE dst
+~drain
+## A write that serves a blocked BLPOP
+a: GET bq
+q! BLPOP bq 5
+~sleep 100
+w: LPUSH bq x
+~sleep 100
+~drain
+## The tracking client's own write
+a: GET own
+a: SET own 1
+~drain
+## Lazy expiry found by another client's read (cycle off)
+w: DEBUG SET-ACTIVE-EXPIRE 0
+w: SET lx v PX 1000
+a: GET lx
+~sleep 2500
+w: GET lx
+~drain
+## Lazy expiry found by the tracking client's own read
+w: SET ly v PX 1000
+a: GET ly
+~sleep 2500
+a: GET ly
+~drain
+## A write to a key that has expired but is still there
+w: SET lz v PX 1000
+a: GET lz
+~sleep 2500
+w: SET lz v2
+~drain
+## Hash field expiry found by another client's read
+w: HSET hf a 1 b 2
+w: HPEXPIRE hf 1000 FIELDS 1 a
+a: HGETALL hf
+~sleep 2500
+w: HGET hf a
+~drain
+w: DEBUG SET-ACTIVE-EXPIRE 1
+## Expiry by the cycle
+w: SET cx v PX 1000
+a: GET cx
+~sleep 1500
+~drain
+## Hash field expiry by the cycle
+w: HSET hc a 1 b 2
+w: HPEXPIRE hc 1000 FIELDS 1 a
+a: HGETALL hc
+~sleep 1500
+~drain
+## Eviction (one key, so that the order is not random)
+w: FLUSHALL
+~drain
+w: SET ev 1
+a: GET ev
+w: CONFIG SET maxmemory-policy allkeys-random
+w: CONFIG SET maxmemory 1
+w: SET ev2 1
+~drain
+w: CONFIG SET maxmemory 0
+## NOLOOP: a key evicted at the start of the client's own command, and a key
+## found expired by its own read
+n: HELLO 3 @@ proto id
+n: CLIENT TRACKING ON NOLOOP
+n: GET ne
+w: SET ne 1
+~drain
+n: GET ne
+w: CONFIG SET maxmemory 1
+n: SET other 1
+~drain
+w: CONFIG SET maxmemory 0
+w: DEBUG SET-ACTIVE-EXPIRE 0
+w: SET nx v PX 1000
+n: GET nx
+~sleep 2500
+n: GET nx
+~drain
+w: SET nx v2
+~drain
+## BCAST NOLOOP: a key under its prefix found expired by its own read
+bn: HELLO 3 @@ proto id
+bn: CLIENT TRACKING ON BCAST NOLOOP PREFIX bx
+w: SET bx1 v PX 1000
+~drain
+~sleep 2500
+bn: GET bx1
+~drain
+w: DEBUG SET-ACTIVE-EXPIRE 1
+## OPTIN: CLIENT CACHING YES survives other CLIENT subcommands?
+o: HELLO 3 @@ proto id
+o: CLIENT TRACKING ON OPTIN
+o: CLIENT CACHING YES
+o: CLIENT ID
+o: GET c1
+w: SET c1 1
+~drain
+## ... and a command refused for its arity, or unknown
+o: CLIENT CACHING YES
+o: GET
+o: GET c2
+w: SET c2 1
+~drain
+o: CLIENT CACHING YES
+o: NOSUCHCOMMAND
+o: GET c3
+w: SET c3 1
+~drain
+o: CLIENT CACHING YES
+o: CLIENT TRACKINGINFO
+o: CLIENT TRACKING ON
+o: CLIENT TRACKINGINFO
+o: CLIENT TRACKING ON OPTOUT
+o: CLIENT TRACKINGINFO
+o: GET c4
+w: SET c4 1
+~drain

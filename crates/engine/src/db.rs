@@ -22,6 +22,12 @@ pub enum Note {
     /// These fields of the hash at the key were deleted because their TTL
     /// had passed; `emptied`: they were its last, and the hash went too.
     FieldsExpired { fields: Vec<Bytes>, emptied: bool },
+    /// The key changed, for client-side caching (recorded only while
+    /// [`Db::track_changes`] is on): written, deleted, expired, evicted, or
+    /// handed out for writing and not reported [`Db::unchanged`].
+    /// `by_server`: the server did it on its own account (expiry, eviction)
+    /// rather than as what a command asked for.
+    Changed { by_server: bool },
 }
 
 /// A stored value.
@@ -219,6 +225,11 @@ pub struct Db {
     note_created: bool,
     /// What happened to keys since the last [`Db::take_notes`], in order.
     notes: Vec<(Note, Bytes)>,
+    /// Whether to note changed keys ([`Note::Changed`]).
+    track_changes: bool,
+    /// Keys handed out for writing since the last [`Db::take_notes`], noted
+    /// as changed then unless [`Db::unchanged`] takes them back first.
+    maybe_changed: Vec<Bytes>,
     /// How quickly the access-frequency counter saturates (higher: slower)
     /// and after how many unused minutes it drops by one.
     lfu_log_factor: u32,
@@ -508,12 +519,23 @@ impl Db {
         self.track_writes
     }
 
-    /// Records that `key` may have changed, for the benefit of watchers.
+    /// Records that `key` may have changed, for the benefit of watchers
+    /// and of client-side caching.
     fn touch(&mut self, key: &[u8]) {
+        self.touch_as(key, false);
+    }
+
+    /// [`Db::touch`], saying whether the server changed the key on its own
+    /// account (expiry, eviction).
+    fn touch_as(&mut self, key: &[u8], by_server: bool) {
         if !self.watched.is_empty() {
             if let Some(watched) = self.watched.get_mut(key) {
                 watched.version += 1;
             }
+        }
+        if self.track_changes {
+            self.notes
+                .push((Note::Changed { by_server }, Bytes::copy_from_slice(key)));
         }
     }
 
@@ -527,16 +549,36 @@ impl Db {
                 }
             }
         }
+        if self.track_changes && !self.maybe_changed.iter().any(|kept| kept == key) {
+            self.maybe_changed.push(Bytes::copy_from_slice(key));
+        }
     }
 
     /// Reports that the command now running obtained `key` for writing but
     /// did not modify it (`SREM` of a member that is not there, say), so
-    /// watchers need not be disturbed.
+    /// watchers need not be disturbed, nor clients that cache it. Must come
+    /// before the command raises any keyspace notification, which notes
+    /// the keys handed out so far as changed.
     pub fn unchanged(&mut self, key: &[u8]) {
         if !self.watched.is_empty() {
             if let Some(watched) = self.watched.get_mut(key) {
                 watched.maybe_changed = false;
             }
+        }
+        if !self.maybe_changed.is_empty() {
+            self.maybe_changed.retain(|kept| kept != key);
+        }
+    }
+
+    /// Turns recording of changed keys ([`Note::Changed`]) on or off, for
+    /// client-side caching. Off (the default), a change costs one test of
+    /// this flag.
+    pub fn track_changes(&mut self, on: bool) {
+        self.track_changes = on;
+        if !on {
+            self.maybe_changed.clear();
+            self.notes
+                .retain(|(note, _)| !matches!(note, Note::Changed { .. }));
         }
     }
 
@@ -577,14 +619,18 @@ impl Db {
         }
     }
 
-    /// What happened to keys since the last call, in order.
+    /// What happened to keys since the last call, in order. Keys handed
+    /// out for writing since then count as changed now.
     pub fn take_notes(&mut self) -> Vec<(Note, Bytes)> {
+        for key in self.maybe_changed.drain(..) {
+            self.notes.push((Note::Changed { by_server: false }, key));
+        }
         std::mem::take(&mut self.notes)
     }
 
     /// Whether anything has been noted since the last [`Db::take_notes`].
     pub fn has_notes(&self) -> bool {
-        !self.notes.is_empty()
+        !self.notes.is_empty() || !self.maybe_changed.is_empty()
     }
 
     fn note(&mut self, note: Note, key: &[u8]) {
@@ -664,7 +710,7 @@ impl Db {
             if self.track_expired {
                 self.note(Note::Expired, key);
             }
-            self.remove_entry(key);
+            self.remove_entry(key, true);
             if self.note_misses {
                 self.note(Note::Missed, key);
             }
@@ -674,10 +720,10 @@ impl Db {
         Some(pos)
     }
 
-    fn remove_entry(&mut self, key: &[u8]) -> Option<Entry> {
+    fn remove_entry(&mut self, key: &[u8], by_server: bool) -> Option<Entry> {
         self.preserve_key(key);
         let (key, entry) = self.dict.remove(key)?;
-        self.touch(&key);
+        self.touch_as(&key, by_server);
         unindex_fields(&mut self.field_index, &key, &entry.value);
         if let Some(at) = entry.expire_at {
             self.expires.remove(&(at, key));
@@ -715,8 +761,10 @@ impl Db {
     /// buffer alive for as long as the key exists.
     pub fn set(&mut self, key: &[u8], mut value: Value, ttl: SetTtl, now: u64) {
         self.note_written(key);
+        // An expired key goes first; then the change is the new value's.
+        let pos = self.live(key, now);
         self.touch(key);
-        match self.live(key, now) {
+        match pos {
             Some(pos) => {
                 self.preserve(pos);
                 let (stored_key, entry) = self.dict.at_mut(pos);
@@ -819,7 +867,7 @@ impl Db {
     /// it deleted the key.
     pub fn remove_if_empty(&mut self, key: &[u8], now: u64) -> bool {
         if self.get(key, now).is_some_and(Value::is_empty_collection) {
-            self.remove_entry(key);
+            self.remove_entry(key, false);
             return true;
         }
         false
@@ -849,8 +897,14 @@ impl Db {
     /// Removes a key, returning its value and expiry if it was live.
     pub fn take(&mut self, key: &[u8], now: u64) -> Option<(Value, Option<u64>)> {
         self.live(key, now)?;
-        self.remove_entry(key)
+        self.remove_entry(key, false)
             .map(|entry| (entry.value, entry.expire_at))
+    }
+
+    /// Removes a key to free memory (eviction). Returns whether a live key
+    /// was removed.
+    pub fn evict(&mut self, key: &[u8], now: u64) -> bool {
+        self.live(key, now).is_some() && self.remove_entry(key, true).is_some()
     }
 
     /// Removes a key. Returns whether a live key was removed.
@@ -891,11 +945,13 @@ impl Db {
                 _ => break,
             }
             if let Some((_, key)) = self.expires.pop_first() {
-                self.touch(&key);
                 self.preserve_key(&key);
                 if self.track_expired {
                     self.notes.push((Note::Expired, key.clone()));
                 }
+                // After the expiry is noted: Redis announces `expired`
+                // before it invalidates cached copies.
+                self.touch_as(&key, true);
                 if let Some((_, entry)) = self.dict.remove(&key) {
                     unindex_fields(&mut self.field_index, &key, &entry.value);
                 }
@@ -976,7 +1032,7 @@ impl Db {
         let emptied = hash.is_empty();
         let count = removed.len();
         self.after_fields_expired(key, count, emptied, removed);
-        self.touch(key);
+        self.touch_as(key, true);
         count
     }
 
@@ -1027,9 +1083,11 @@ impl Db {
                 self.field_index.insert((next, stored_key.clone()));
             }
             if !fields.is_empty() {
-                // A change of the key, for watchers, as in Redis.
-                self.touch(&key);
-                self.after_fields_expired(&key, fields.len(), emptied, fields);
+                let count = fields.len();
+                self.after_fields_expired(&key, count, emptied, fields);
+                // A change of the key, for watchers and cached copies, as
+                // in Redis, which announces `hexpired` first.
+                self.touch_as(&key, true);
             }
         }
         removed
@@ -1052,7 +1110,7 @@ impl Db {
             ));
         }
         if emptied {
-            self.remove_entry(key);
+            self.remove_entry(key, true);
         }
     }
 
@@ -1801,6 +1859,117 @@ mod tests {
         }
         assert_eq!(any.len(), 4);
         assert_eq!(volatile.len(), 3);
+    }
+
+    /// The `Changed` notes, as `key` or `key!` (by the server).
+    fn changes(db: &mut Db) -> Vec<String> {
+        db.take_notes()
+            .into_iter()
+            .filter_map(|(note, key)| match note {
+                Note::Changed { by_server } => Some(format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&key),
+                    if by_server { "!" } else { "" }
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn changes_are_noted_only_while_tracked() {
+        let mut db = Db::new();
+        db.set(b"a", s("1"), SetTtl::Clear, 0);
+        assert!(!db.has_notes());
+        db.track_changes(true);
+        db.set(b"a", s("2"), SetTtl::Clear, 0);
+        db.set_expire(b"a", Some(100), 0);
+        db.remove(b"missing", 0);
+        db.remove(b"a", 0);
+        assert_eq!(changes(&mut db), ["a", "a", "a"]);
+        db.set(b"b", s("1"), SetTtl::Clear, 0);
+        db.track_changes(false);
+        assert!(changes(&mut db).is_empty());
+        db.set(b"b", s("2"), SetTtl::Clear, 0);
+        assert!(!db.has_notes());
+    }
+
+    #[test]
+    fn a_value_handed_out_for_writing_changed_unless_reported_unchanged() {
+        let mut db = Db::new();
+        db.set(b"a", s("1"), SetTtl::Clear, 0);
+        db.set(b"b", s("1"), SetTtl::Clear, 0);
+        db.track_changes(true);
+        db.get_mut(b"a", 0);
+        db.get_mut(b"a", 0);
+        db.get_mut(b"b", 0);
+        db.unchanged(b"b");
+        assert!(db.has_notes());
+        assert_eq!(changes(&mut db), ["a"]);
+        db.get_or_insert_with(b"c", 0, || s("new"));
+        assert_eq!(changes(&mut db), ["c"]);
+    }
+
+    #[test]
+    fn expiry_and_eviction_are_changes_by_the_server_noted_after_the_expiry() {
+        let mut db = Db::new();
+        db.track_expired(true);
+        db.track_changes(true);
+        db.set(b"lazy", s("v"), SetTtl::At(10), 0);
+        db.set(b"cycle", s("v"), SetTtl::At(10), 0);
+        db.set(b"evicted", s("v"), SetTtl::Clear, 0);
+        db.take_notes();
+        db.get(b"lazy", 20);
+        db.active_expire(20, 10);
+        assert!(db.evict(b"evicted", 20));
+        assert!(!db.evict(b"evicted", 20));
+        let notes: Vec<String> = db
+            .take_notes()
+            .into_iter()
+            .map(|(note, key)| format!("{note:?} {}", String::from_utf8_lossy(&key)))
+            .collect();
+        assert_eq!(
+            notes,
+            [
+                "Expired lazy",
+                "Changed { by_server: true } lazy",
+                "Expired cycle",
+                "Changed { by_server: true } cycle",
+                "Changed { by_server: true } evicted",
+            ]
+        );
+        // Writing a key that has expired: the expiry, then the write.
+        db.set(b"k", s("v"), SetTtl::At(30), 20);
+        db.take_notes();
+        db.set(b"k", s("w"), SetTtl::Clear, 40);
+        let notes: Vec<String> = db
+            .take_notes()
+            .into_iter()
+            .map(|(note, _)| format!("{note:?}"))
+            .collect();
+        assert_eq!(
+            notes,
+            [
+                "Expired",
+                "Changed { by_server: true }",
+                "Changed { by_server: false }"
+            ]
+        );
+    }
+
+    #[test]
+    fn swapping_and_clearing_note_no_changes() {
+        let mut a = Db::new();
+        let mut b = Db::new();
+        a.set(b"k", s("v"), SetTtl::Clear, 0);
+        a.track_changes(true);
+        b.track_changes(true);
+        Db::swap_contents(&mut a, &mut b);
+        b.clear();
+        a.set(b"x", s("v"), SetTtl::Clear, 0);
+        a.take_all();
+        assert_eq!(changes(&mut a), ["x"]);
+        assert!(changes(&mut b).is_empty());
     }
 
     #[test]

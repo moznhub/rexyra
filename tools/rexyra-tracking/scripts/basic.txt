@@ -1,0 +1,113 @@
+## 1. Basic: RESP3 client tracks a key read; another client writes it
+a: HELLO 3 @@ proto id
+a: CLIENT TRACKING ON
+a: GET k
+b: SET k 1
+~drain
+## second write without a new read: no message
+b: SET k 2
+~drain
+## 2. Missing key read is tracked
+a: GET missing
+b: SET missing x
+~drain
+## 3. Own write after read (no NOLOOP): reply then push?
+a: GET k
+a: SET k 3
+~drain
+## 4. Several keys in one read; one write per key
+a: MGET m1 m2 m3
+b: MSET m1 1 m2 2
+~drain
+## 5. Different database, same name
+a: GET dbkey
+b: SELECT 1
+b: SET dbkey x
+b: SELECT 0
+~drain
+## 6. Write that changes nothing (SADD existing member), and failed write
+b: SADD s x
+a: SMEMBERS s
+b: SADD s x
+~drain
+b: SADD s y
+~drain
+a: GET s
+b: INCR s
+~drain
+## 7. MULTI: read then own write in the same transaction
+a: GET t
+a: MULTI
+a: GET t
+a: SET t 1
+a: EXEC
+~drain
+## 8. Script: read then write k8; then write then read k9
+a: EVAL "redis.call('GET', KEYS[1]); redis.call('SET', KEYS[1], 'x'); return 1" 1 k8
+~drain
+a: EVAL "redis.call('SET', KEYS[1], 'x'); return redis.call('GET', KEYS[1])" 1 k9
+b: SET k9 y
+~drain
+## 9. EVAL_RO read
+a: EVAL_RO "return redis.call('GET', KEYS[1])" 1 k10
+b: SET k10 y
+~drain
+## 10. NOLOOP
+c: HELLO 3 @@ proto id
+c: CLIENT TRACKING ON NOLOOP
+c: GET n
+c: SET n 1
+~drain
+c: GET n
+b: SET n 2
+~drain
+## 11. Expiry: lazily by a read, and actively
+a: GET e1
+b: SET e1 v PX 50
+~drain
+a: GET e1
+~sleep 300
+~drain
+## 12. FLUSHDB / FLUSHALL / SWAPDB
+a: GET f1
+b: FLUSHDB
+~drain
+c: GET f2
+b: FLUSHALL
+~drain
+a: GET f3
+b: SWAPDB 0 1
+~drain
+b: SWAPDB 0 1
+## 13. DEL and EXPIRE and RENAME
+a: GET d1
+a: GET d2
+b: SET d1 x
+~drain
+a: GET d1
+b: RENAME d1 d2
+~drain
+a: GET d3
+b: SET d3 v
+~drain
+a: GET d3
+b: EXPIRE d3 100
+~drain
+## 14. A read that fails (WRONGTYPE) is still tracked?
+b: RPUSH wl x
+a: GET wl
+b: RPUSH wl y
+~drain
+## 15. TYPE / EXISTS / STRLEN / TTL track?
+a: EXISTS x1
+a: TYPE x2
+a: TTL x3
+a: STRLEN x4
+b: MSET x1 1 x2 2 x3 3 x4 4
+~drain
+## 16. INFO and CLIENT LIST and TRACKINGINFO
+a: CLIENT TRACKINGINFO
+a: CLIENT GETREDIR
+a: CLIENT INFO @@ id flags redir resp
+b: INFO clients @@ tracking_clients
+b: INFO stats @@ tracking_total_keys tracking_total_items tracking_total_prefixes

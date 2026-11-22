@@ -169,6 +169,14 @@ pub(crate) fn client(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
         clients::unblock(ctx, args)
     } else if is(sub, "NO-EVICT") || is(sub, "NO-TOUCH") {
         clients::switch(ctx, args)
+    } else if is(sub, "TRACKING") {
+        crate::tracking::tracking_command(ctx, args)
+    } else if is(sub, "CACHING") {
+        crate::tracking::caching_command(ctx, args)
+    } else if is(sub, "GETREDIR") {
+        crate::tracking::getredir_command(ctx, args)
+    } else if is(sub, "TRACKINGINFO") {
+        crate::tracking::trackinginfo_command(ctx, args)
     } else {
         unknown_subcommand("CLIENT", sub)
     }

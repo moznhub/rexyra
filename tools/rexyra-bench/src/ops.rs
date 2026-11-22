@@ -7,6 +7,15 @@
 //! rexyra-bench ops --label on-unheard --notify KEA
 //! ```
 //!
+//! With `--tracker yes`, one more connection has client-side caching on
+//! (`CLIENT TRACKING ON`, redirected to a Pub/Sub connection that reads
+//! the invalidations) and reads every key the commands use, over and
+//! over, so that each write invalidates a tracked key:
+//!
+//! ```text
+//! rexyra-bench ops --label tracked --tracker yes
+//! ```
+//!
 //! Each run starts its own server (automatic saves off), optionally sets
 //! `notify-keyspace-events`, and then, for each command in turn, has
 //! `--clients` connections send pipelines of `--pipeline` commands for
@@ -35,6 +44,7 @@ pub struct Options {
     runs: u32,
     commands: Vec<String>,
     notify: String,
+    tracker: bool,
     label: String,
 }
 
@@ -60,6 +70,7 @@ impl Options {
             runs: 3,
             commands: vec!["SET".into(), "GET".into(), "LPUSH".into()],
             notify: String::new(),
+            tracker: false,
             label: "ops".into(),
         };
         let mut it = args.iter();
@@ -92,6 +103,7 @@ impl Options {
                     }
                 }
                 "--notify" => o.notify = value.clone(),
+                "--tracker" => o.tracker = value == "yes",
                 "--label" => o.label = value.clone(),
                 _ => return Err(other(format!("unknown option {flag}"))),
             }
@@ -208,6 +220,11 @@ pub fn run(o: &Options) -> io::Result<()> {
                 return Err(other(format!("CONFIG SET: {}", reply.short())));
             }
         }
+        let tracker = if o.tracker {
+            Some(Tracker::start(o)?)
+        } else {
+            None
+        };
         for command in &o.commands {
             let m = measure(o, command)?;
             println!(
@@ -215,8 +232,103 @@ pub fn run(o: &Options) -> io::Result<()> {
                 o.label, m.ops_per_sec, m.p50_ms, m.p99_ms
             );
         }
+        if let Some(tracker) = tracker {
+            let (reads, invalidations) = tracker.stop()?;
+            println!(
+                "{}\t{run}\ttracker\t{reads} reads\t{invalidations} invalidations",
+                o.label
+            );
+        }
         server.shutdown()?;
         let _ = std::fs::remove_dir_all(&dir);
     }
     Ok(())
+}
+
+const STOP: &[u8] = b"rexyra-bench:stop";
+
+/// A client with client-side caching on that keeps reading every key the
+/// measured commands use, and the connection its invalidations go to.
+struct Tracker {
+    port: u16,
+    stop: Arc<AtomicBool>,
+    reader: thread::JoinHandle<io::Result<u64>>,
+    listener: thread::JoinHandle<io::Result<u64>>,
+}
+
+impl Tracker {
+    fn start(o: &Options) -> io::Result<Tracker> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut listener = Conn::connect(o.port)?;
+        let id = listener.call_str(&["CLIENT", "ID"])?.int()?;
+        listener.call_str(&["SUBSCRIBE", "__redis__:invalidate"])?;
+        let mut reader = Conn::connect(o.port)?;
+        let reply = reader.call_str(&["CLIENT", "TRACKING", "ON", "REDIRECT", &id.to_string()])?;
+        if reply.is_error() {
+            return Err(other(format!("CLIENT TRACKING: {}", reply.short())));
+        }
+        reader.set_timeout(Some(Duration::from_secs(30)))?;
+        let mut request = Vec::new();
+        let mut reads = 0;
+        for client in 0..o.clients {
+            for i in 0..o.pipeline {
+                encode(
+                    &mut request,
+                    &[b"GET", format!("key:{client}:{i}").as_bytes()],
+                );
+                reads += 1;
+            }
+            encode(
+                &mut request,
+                &[b"LLEN", format!("list:{client}").as_bytes()],
+            );
+            reads += 1;
+        }
+        let reader_stop = Arc::clone(&stop);
+        let reader = thread::spawn(move || -> io::Result<u64> {
+            let mut done = 0;
+            while !reader_stop.load(Relaxed) {
+                reader.send(&request)?;
+                for _ in 0..reads {
+                    reader.read()?;
+                }
+                done += reads;
+            }
+            Ok(done)
+        });
+        // Counts invalidations until told to stop, by a message of its own.
+        let listener = thread::spawn(move || -> io::Result<u64> {
+            let mut messages = 0;
+            loop {
+                if let Reply::Array(Some(items)) = listener.read()? {
+                    if matches!(items.get(2), Some(Reply::Bulk(Some(text))) if text == STOP) {
+                        return Ok(messages);
+                    }
+                }
+                messages += 1;
+            }
+        });
+        Ok(Tracker {
+            port: o.port,
+            stop,
+            reader,
+            listener,
+        })
+    }
+
+    /// Stops both; returns the keys read and the invalidations received.
+    fn stop(self) -> io::Result<(u64, u64)> {
+        self.stop.store(true, Relaxed);
+        let reads = self
+            .reader
+            .join()
+            .map_err(|_| other("tracker panicked"))??;
+        let stop = String::from_utf8_lossy(STOP).into_owned();
+        Conn::connect(self.port)?.call_str(&["PUBLISH", "__redis__:invalidate", &stop])?;
+        let messages = self
+            .listener
+            .join()
+            .map_err(|_| other("tracker panicked"))??;
+        Ok((reads, messages))
+    }
 }

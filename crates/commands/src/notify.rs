@@ -21,12 +21,18 @@
 //! command and after the periodic expiry cycle, so each appears exactly
 //! where it happened in the stream.
 //!
+//! [`flush`] also turns the keys the keyspace noted as changed into
+//! client-side caching invalidations ([`crate::tracking`]), in the same
+//! stream, so each comes where Redis sends it: after an `expired`, before
+//! the event of the write that caused it.
+//!
 //! With the setting off (the default) [`notify`] costs one test of a flag
 //! word, and the keyspace notes nothing it would not note anyway.
 
 use bytes::{BufMut, Bytes, BytesMut};
 use rexyra_engine::{Keyspace, Note};
 
+use crate::tracking::Peers;
 use crate::{Ctx, Server};
 
 /// `K`: publish on `__keyspace@<db>__:<key>`.
@@ -133,7 +139,7 @@ pub fn format(flags: u32) -> String {
 pub(crate) fn notify(ctx: &mut Ctx<'_>, class: u32, event: &'static str, key: &[u8]) {
     if ctx.server.notify_flags & class != 0 {
         let db = ctx.client.db;
-        raise(ctx.server, ctx.keyspace, event, key, db);
+        raise(ctx, event, key, db);
     }
 }
 
@@ -142,15 +148,21 @@ pub(crate) fn notify(ctx: &mut Ctx<'_>, class: u32, event: &'static str, key: &[
 #[inline]
 pub(crate) fn notify_in(ctx: &mut Ctx<'_>, db: usize, class: u32, event: &'static str, key: &[u8]) {
     if ctx.server.notify_flags & class != 0 {
-        raise(ctx.server, ctx.keyspace, event, key, db);
+        raise(ctx, event, key, db);
     }
 }
 
 #[inline(never)]
-fn raise(server: &mut Server, keyspace: &mut Keyspace, event: &'static str, key: &[u8], db: usize) {
-    // What the keyspace noted earlier in the command happened first.
-    flush(server, keyspace);
-    publish(server, event, key, db);
+fn raise(ctx: &mut Ctx<'_>, event: &'static str, key: &[u8], db: usize) {
+    // What the keyspace noted earlier in the command happened first: keys
+    // that expired, and the invalidations of the keys the command changed
+    // (sent before the event, as in Redis).
+    let peers = Peers {
+        others: ctx.clients,
+        current: Some(ctx.client),
+    };
+    flush(ctx.server, ctx.keyspace, &peers);
+    publish(ctx.server, event, key, db);
 }
 
 /// Publishes one event on the channels the flags ask for.
@@ -188,11 +200,17 @@ const NOTED: u32 = EXPIRED | KEY_MISS | NEW | HASH | GENERIC;
 
 /// Acts on what the keyspace has noted since the last call: logs what was
 /// deleted by a TTL to the append-only file (a key as `DEL`, hash fields
-/// as `HDEL`), and publishes the `expired`, `hexpired`, `keymiss` and
-/// `new` events, in the order they happened.
-pub fn flush(server: &mut Server, keyspace: &mut Keyspace) {
+/// as `HDEL`), publishes the `expired`, `hexpired`, `keymiss` and `new`
+/// events, and invalidates the keys clients cache
+/// ([`crate::tracking::changed`]), in the order they happened. `peers`
+/// are the clients invalidations may go to.
+pub fn flush(server: &mut Server, keyspace: &mut Keyspace, peers: &Peers<'_>) {
     for (db, note, key) in keyspace.take_notes() {
         let (class, event) = match note {
+            Note::Changed { by_server } => {
+                crate::tracking::changed(server, peers, key, by_server);
+                continue;
+            }
             Note::Expired => {
                 if let Some(aof) = &mut server.aof {
                     aof.log(db, &[&b"DEL"[..], &key[..]]);
@@ -228,8 +246,15 @@ pub fn flush(server: &mut Server, keyspace: &mut Keyspace) {
 /// command.
 #[inline]
 pub(crate) fn settle(ctx: &mut Ctx<'_>) {
-    if ctx.server.aof.is_some() || ctx.server.notify_flags & NOTED != 0 {
-        flush(ctx.server, ctx.keyspace);
+    if ctx.server.aof.is_some()
+        || ctx.server.notify_flags & NOTED != 0
+        || crate::tracking::recording(ctx.server)
+    {
+        let peers = Peers {
+            others: ctx.clients,
+            current: Some(ctx.client),
+        };
+        flush(ctx.server, ctx.keyspace, &peers);
     }
 }
 
@@ -713,7 +738,7 @@ mod tests {
         assert_eq!(keyspace(&mut h), ["a expired"]);
         // Found by the periodic cycle: announced when `flush` runs.
         assert_eq!(h.keyspace.cron(h.now, 100), 1);
-        flush(&mut h.server, &mut h.keyspace);
+        flush(&mut h.server, &mut h.keyspace, &Peers::none(&h.clients));
         assert_eq!(keyspace(&mut h), ["b expired"]);
         // Without `x` nothing is noted, so nothing piles up.
         h.run("CONFIG SET notify-keyspace-events KEg");
