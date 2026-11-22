@@ -687,7 +687,6 @@ func TestCommandGetKeys(t *testing.T) {
 }
 
 func TestCommandGetKeysAndFlags(t *testing.T) {
-	skipOnRexyra(t, "COMMAND GETKEYSANDFLAGS is not implemented: the command table has no per-key flags")
 	eachProtocol(t, func(t *testing.T, c *redis.Client, p string) {
 		kf := must(c.CommandGetKeysAndFlags(ctx(), "LMOVE", "src", "dst", "LEFT", "RIGHT").Result())
 		equal(t, "COMMAND GETKEYSANDFLAGS", fmt.Sprint(kf), "[{src [RW access delete]} {dst [RW insert]}]")

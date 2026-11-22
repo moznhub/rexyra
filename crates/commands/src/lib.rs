@@ -14,6 +14,7 @@ mod connection;
 mod hashes;
 mod introspection;
 mod keys;
+pub mod keyspec;
 mod lcs;
 mod lists;
 mod lualibs;
@@ -211,6 +212,8 @@ pub struct CommandSpec {
     pub first_key: i64,
     pub last_key: i64,
     pub key_step: i64,
+    /// Where the keys are and how they are used, as Redis 7 describes them.
+    pub key_specs: keyspec::KeySpecs,
     pub group: &'static str,
     pub since: &'static str,
     pub summary: &'static str,
@@ -332,7 +335,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, spec: &CommandSpec, args: &[Bytes]) -> Fram
     // looks up without notifying, as `OBJECT`.
     let reads = ctx.server.notify_flags & notify::KEY_MISS != 0
         && spec.flags.contains(&"readonly")
-        && (spec.first_key != 0 || acl::has_movable_keys(spec))
+        && keyspec::has_keys(spec)
         && spec.name != "memory";
     if reads {
         notify::reading(ctx, true);
@@ -658,12 +661,25 @@ mod tests {
                 );
                 let writes = spec.flags.contains(&"write");
                 let reads = spec.flags.contains(&"readonly");
-                // `WATCH` names keys but neither reads nor writes them.
+                // `WATCH` names keys but neither reads nor writes them, and
+                // the shard channel commands name channels in key positions.
                 assert!(
-                    writes != reads || spec.name == "watch",
+                    writes != reads || spec.name == "watch" || !keyspec::names_keys(spec.key_specs),
                     "{} must be write xor readonly",
                     spec.name
                 );
+            }
+            // Legacy positions start where the first key specification
+            // does, and only a command whose keys move can do without them.
+            match spec.key_specs.first().map(|first| first.begin_search) {
+                Some(keyspec::BeginSearch::Index(index)) if spec.first_key != 0 => {
+                    assert_eq!(spec.first_key, index as i64, "{}", spec.name);
+                }
+                Some(keyspec::BeginSearch::Index(_)) => {
+                    assert!(keyspec::movable(spec), "{}", spec.name);
+                }
+                Some(_) => panic!("{}: a first specification without an index", spec.name),
+                None => assert_eq!(spec.first_key, 0, "{}", spec.name),
             }
         }
     }

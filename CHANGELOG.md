@@ -4,6 +4,16 @@ All notable changes to Rexyra are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added
+
+- `COMMAND GETKEYSANDFLAGS`, which go-redis calls: the keys of a command line with how the command uses each (`RW access delete`, `OW update`, ...), as Redis 7.4 gives them, also for `SET ... GET`, `BITFIELD`, `SORT ... STORE` and a `numkeys` that is not a plain number, where Redis reads the arguments with a procedure of the command's own.
+- **Key specifications** in `COMMAND INFO` for every command, the same as Redis 7.4's. The ACL key checks, `COMMAND GETKEYS` and `GETKEYSANDFLAGS` all find keys from them, and `tools/compare-command-info.py` compares `COMMAND INFO` of every command, and `GETKEYS` and `GETKEYSANDFLAGS` of 276 command lines, with a Redis server, in RESP2 and RESP3.
+
+### Fixed
+
+- `COMMAND INFO` reports the flags Redis 7.4 reports: `movablekeys` for `SORT`, `SORT_RO`, `LMPOP`, `BLMPOP`, `ZMPOP`, `BZMPOP`, `SINTERCARD`, `ZINTERCARD`, `ZUNION`, `ZINTER`, `ZDIFF`, `ZUNIONSTORE`, `ZINTERSTORE` and `ZDIFFSTORE`; Redis's order (`write blocking fast` for `BZPOPMIN`); none for containers such as `CONFIG` and `OBJECT`, whose subcommands carry them; `loading` and `stale` for `ECHO`, `allow_busy` for `HELLO` and `QUIT`; and no `may_replicate` on `PUBLISH`, `SPUBLISH`, `EVAL`, `EVALSHA` and `FCALL`, nor `skip_monitor` and `skip_slowlog` on `AUTH` and `HELLO`, which still stay out of the slow log. `SSUBSCRIBE`, `SUNSUBSCRIBE` and `SPUBLISH` have key positions, as in Redis, where their shard channels sit. The tips and subcommands are empty sets in RESP3, not arrays.
+- `COMMAND GETKEYS` follows Redis in the remaining cases: a command without keys is reported as such before a wrong number of arguments (`ECHO`), a subcommand is looked up (`OBJECT ENCODING k`, and `Invalid command specified` for one that does not exist), `ZUNIONSTORE` names its destination first, `SORT` finds the destination of its last `STORE` and skips the arguments of `LIMIT`, `BY` and `GET`, and a key count larger than the arguments there are, or one that is no number at all, is `Invalid arguments specified for command` (or no keys for `EVAL` and `FCALL`). ACL key checks see the same keys, so the destination of `ZUNIONSTORE` is the key an error names when both it and a source are denied, and for a key count that is not valid the keys checked are those Redis checks (none for `EVAL s 3 a b`, which then fails with its own error; `a` for `EVAL s 1x a`).
+
 ## [0.4.0] - 2026-11-21
 
 Rexyra is now tested with five client libraries (StackExchange.Redis, redis-py, Jedis, Lettuce and go-redis), and has what they turned up: expiry of single hash fields as in Redis 7.4, keyspace notifications, and `MOVE`, `SWAPDB` and `COMMAND GETKEYS`.
