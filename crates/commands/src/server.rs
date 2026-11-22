@@ -340,6 +340,7 @@ impl Server {
         let slow = u64::try_from(self.slowlog_slower_than).is_ok_and(|limit| micros >= limit);
         // Commands that carry passwords are kept out of the log.
         let secret = spec.flags.contains(&"skip_slowlog")
+            || matches!(spec.name, "auth" | "hello")
             || (spec.name == "config"
                 && args
                     .iter()

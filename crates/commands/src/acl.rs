@@ -111,6 +111,7 @@ const CONTAINERS: &[(&str, Subcommands)] = &[
             ("count", CONN),
             ("docs", CONN),
             ("getkeys", CONN),
+            ("getkeysandflags", CONN),
             ("info", CONN),
             ("list", CONN),
             ("help", CONN),
@@ -197,6 +198,16 @@ fn subcommands(command: &str) -> Option<Subcommands> {
         .iter()
         .find(|(name, _)| *name == command)
         .map(|(_, subs)| *subs)
+}
+
+/// Whether a command is a container of subcommands.
+pub(crate) fn is_container(command: &str) -> bool {
+    subcommands(command).is_some()
+}
+
+/// Whether `sub` (in any case) is a subcommand of the container `command`.
+pub(crate) fn is_subcommand(command: &str, sub: &str) -> bool {
+    subcommands(command).is_some_and(|subs| subs.iter().any(|(name, _)| is(sub.as_bytes(), name)))
 }
 
 /// The categories a command is in, in the order Redis lists them in
@@ -726,78 +737,13 @@ impl User {
     }
 }
 
-/// Whether a command's keys depend on its other arguments, so that
-/// [`command_keys`] reads them rather than the command table.
-pub(crate) fn has_movable_keys(spec: &CommandSpec) -> bool {
-    matches!(
-        spec.name,
-        "eval"
-            | "evalsha"
-            | "eval_ro"
-            | "evalsha_ro"
-            | "fcall"
-            | "fcall_ro"
-            | "blmpop"
-            | "bzmpop"
-            | "zunion"
-            | "zinter"
-            | "zdiff"
-            | "sintercard"
-            | "zintercard"
-            | "lmpop"
-            | "zmpop"
-            | "zunionstore"
-            | "zinterstore"
-            | "zdiffstore"
-            | "sort"
-            | "sort_ro"
-            | "object"
-            | "memory"
-    )
-}
-
-/// The keys a command names. Most follow from the command table; commands
-/// that say how many keys follow need their arguments read.
+/// The keys a command line names, found from the command's key
+/// specifications as Redis finds them (see [`crate::keyspec::find`]).
 pub(crate) fn command_keys<'a>(spec: &CommandSpec, args: &'a [Bytes]) -> Vec<&'a Bytes> {
-    let counted = |count_at: usize| -> Vec<&'a Bytes> {
-        let count = args
-            .get(count_at)
-            .and_then(|arg| rexyra_resp::parse_i64(arg))
-            .map_or(0, |count| count.max(0) as usize);
-        args.iter().skip(count_at + 1).take(count).collect()
-    };
-    match spec.name {
-        "eval" | "evalsha" | "eval_ro" | "evalsha_ro" | "fcall" | "fcall_ro" | "blmpop"
-        | "bzmpop" => counted(2),
-        "zunion" | "zinter" | "zdiff" | "sintercard" | "zintercard" | "lmpop" | "zmpop" => {
-            counted(1)
-        }
-        "zunionstore" | "zinterstore" | "zdiffstore" => {
-            let mut keys = counted(2);
-            keys.extend(args.get(1));
-            keys
-        }
-        "sort" | "sort_ro" => {
-            let mut keys: Vec<&Bytes> = args.get(1).into_iter().collect();
-            if let Some(at) = args.iter().position(|arg| is(arg, "STORE")) {
-                keys.extend(args.get(at + 1));
-            }
-            keys
-        }
-        "object" | "memory" => args.get(2).into_iter().collect(),
-        _ if spec.first_key == 0 => Vec::new(),
-        _ => {
-            let last = if spec.last_key < 0 {
-                args.len() as i64 + spec.last_key
-            } else {
-                spec.last_key
-            };
-            (spec.first_key..=last)
-                .step_by(spec.key_step.max(1) as usize)
-                .filter_map(|index| args.get(index as usize))
-                .collect()
-        }
-    }
+    crate::keyspec::find(spec, args)
+        .into_iter()
+        .map(|found| &args[found.index])
+        .collect()
 }
 
 /// All users, by name.
@@ -1786,5 +1732,143 @@ mod tests {
         let log = format!("{:?}", h.run("SLOWLOG GET 100"));
         assert!(log.contains("SET"), "{log}");
         assert!(!log.contains("topsecret"), "{log}");
+    }
+
+    /// The keys ACL checks looked at before key specifications, kept to
+    /// show that the checks did not change: the legacy key positions of the
+    /// command table, and hand-written rules for the commands that say how
+    /// many keys follow.
+    fn keys_before_key_specs<'a>(spec: &CommandSpec, args: &'a [Bytes]) -> Vec<&'a Bytes> {
+        let counted = |count_at: usize| -> Vec<&'a Bytes> {
+            let count = args
+                .get(count_at)
+                .and_then(|arg| rexyra_resp::parse_i64(arg))
+                .map_or(0, |count| count.max(0) as usize);
+            args.iter().skip(count_at + 1).take(count).collect()
+        };
+        match spec.name {
+            "eval" | "evalsha" | "eval_ro" | "evalsha_ro" | "fcall" | "fcall_ro" | "blmpop"
+            | "bzmpop" => counted(2),
+            "zunion" | "zinter" | "zdiff" | "sintercard" | "zintercard" | "lmpop" | "zmpop" => {
+                counted(1)
+            }
+            "zunionstore" | "zinterstore" | "zdiffstore" => {
+                let mut keys = counted(2);
+                keys.extend(args.get(1));
+                keys
+            }
+            "sort" | "sort_ro" => {
+                let mut keys: Vec<&Bytes> = args.get(1).into_iter().collect();
+                if let Some(at) = args.iter().position(|arg| is(arg, "STORE")) {
+                    keys.extend(args.get(at + 1));
+                }
+                keys
+            }
+            "object" | "memory" => args.get(2).into_iter().collect(),
+            // Shard channels have had key positions only since.
+            "ssubscribe" | "sunsubscribe" | "spublish" => Vec::new(),
+            _ if spec.first_key == 0 => Vec::new(),
+            _ => {
+                let last = if spec.last_key < 0 {
+                    args.len() as i64 + spec.last_key
+                } else {
+                    spec.last_key
+                };
+                (spec.first_key..=last)
+                    .step_by(spec.key_step.max(1) as usize)
+                    .filter_map(|index| args.get(index as usize))
+                    .collect()
+            }
+        }
+    }
+
+    /// For a broad corpus of command lines, the keys found from the key
+    /// specifications are the keys ACL checks looked at before. (Redis puts
+    /// a destination first where the old rules put it last, which only
+    /// decides which of two denied keys an error names.)
+    #[test]
+    fn key_specifications_find_the_keys_acl_checked_before() {
+        let mut lines: Vec<Vec<String>> = Vec::new();
+        // Every command whose keys stay in place, with as few and with a few
+        // more arguments than it takes, all plain words. The others need
+        // real key counts and subcommands: where those are not valid, the
+        // command fails anyway, and now, as in Redis, without its keys
+        // being checked first (`ZUNIONSTORE d x a`, `OBJECT NOPE k`).
+        let fixed =
+            |spec: &&CommandSpec| !is_container(spec.name) && !crate::keyspec::movable(spec);
+        for spec in COMMANDS.iter().filter(fixed) {
+            let fewest = spec.arity.unsigned_abs() as usize;
+            let most = if spec.arity < 0 { fewest + 3 } else { fewest };
+            for count in fewest..=most {
+                let mut line = vec![spec.name.to_owned()];
+                line.extend((1..count).map(|i| format!("k{i}")));
+                lines.push(line);
+            }
+        }
+        // Realistic lines for the commands whose keys move or whose
+        // subcommands have keys.
+        for line in [
+            "EVAL s 2 a b c",
+            "EVAL s 0",
+            "EVALSHA s 1 a",
+            "EVAL_RO s 1 a x",
+            "EVALSHA_RO s 2 a b",
+            "FCALL f 1 a x",
+            "FCALL_RO f 0 x",
+            "LMPOP 2 a b LEFT",
+            "LMPOP 1 a RIGHT COUNT 2",
+            "BLMPOP 0 2 a b LEFT",
+            "ZMPOP 2 a b MIN COUNT 3",
+            "BZMPOP 1.5 1 a MAX",
+            "ZUNION 2 a b WEIGHTS 1 2",
+            "ZINTER 1 a WITHSCORES",
+            "ZDIFF 2 a b",
+            "SINTERCARD 2 a b LIMIT 1",
+            "ZINTERCARD 3 a b c",
+            "ZUNIONSTORE d 2 a b",
+            "ZINTERSTORE d 1 a AGGREGATE MAX",
+            "ZDIFFSTORE d 2 a b",
+            "SORT l",
+            "SORT l BY w_* LIMIT 0 10 GET # GET o_* DESC ALPHA STORE d",
+            "SORT l STORE d",
+            "SORT_RO l BY w_* GET #",
+            "OBJECT ENCODING a",
+            "OBJECT FREQ a",
+            "OBJECT HELP",
+            "MEMORY USAGE a SAMPLES 5",
+            "SET a 1 EX 10 GET",
+            "BITFIELD a GET u8 0 SET u8 0 1",
+            "BITOP AND d a b c",
+            "MSET a 1 b 2",
+            "BLPOP a b 0",
+            "SSUBSCRIBE c d",
+            "SPUBLISH c m",
+        ] {
+            lines.push(line.split(' ').map(str::to_owned).collect());
+        }
+        for line in lines {
+            let args: Vec<Bytes> = line.iter().map(|arg| Bytes::from(arg.clone())).collect();
+            let spec = lookup(&args[0]).unwrap();
+            let mut now = command_keys(spec, &args);
+            let mut before = keys_before_key_specs(spec, &args);
+            now.sort();
+            before.sort();
+            assert_eq!(now, before, "{}", line.join(" "));
+        }
+    }
+
+    /// As in Redis 7.4, the destination of `ZUNIONSTORE` is checked first,
+    /// so it is the key named when the user may touch none.
+    #[test]
+    fn a_denied_destination_is_named_first() {
+        let mut h = restricted();
+        assert_eq!(
+            h.run("ACL DRYRUN alice zunionstore other 1 another"),
+            bulk("User alice has no permissions to access the 'other' key")
+        );
+        assert_eq!(
+            h.run("ACL DRYRUN alice zunionstore cache:d 1 another"),
+            bulk("User alice has no permissions to access the 'another' key")
+        );
     }
 }
