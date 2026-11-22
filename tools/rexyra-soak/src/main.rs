@@ -6,13 +6,16 @@
 //! of reads, writes, transactions and Lua scripts, some workers one command
 //! at a time and some in pipelines. Meanwhile one connection runs BGSAVE and
 //! BGREWRITEAOF on a timer, one opens and closes connections, and a reporter
-//! records throughput, latency and memory at a fixed interval. At the end
+//! records throughput, latency and memory at a fixed interval. A client that
+//! caches with client-side caching checks that it is told of every change
+//! to what it holds (see [`tracking`]). At the end
 //! every key is read back and compared; if this tool started the server it
 //! then restarts it on the same files and compares everything again.
 
 mod model;
 #[allow(dead_code)] // shared with rexyra-bench
 mod resp;
+mod tracking;
 
 use model::{Model, Op};
 use resp::{encode, info_field, Conn, Reply};
@@ -273,6 +276,8 @@ struct Shared {
     admin_errors: AtomicU64,
     churned: AtomicU64,
     churn_errors: AtomicU64,
+    /// The client-side caching check.
+    tracking: tracking::Counts,
     /// Latency of single operations, microseconds, since the last report.
     single_us: Mutex<Vec<u32>>,
     /// Latency of whole pipelines, microseconds, since the last report.
@@ -715,6 +720,11 @@ fn run(o: Options) -> io::Result<bool> {
     let admin_t = thread::spawn(move || admin(o2, s2));
     let (o2, s2) = (o.clone(), shared.clone());
     let churn_t = thread::spawn(move || churn(o2, s2));
+    let (o2, s2) = (o.clone(), shared.clone());
+    let tracking_t = thread::spawn(move || {
+        let result = tracking::run(o2, s2.clone());
+        tracking::finished(&s2, result);
+    });
     let (o2, s2, path) = (o.clone(), shared.clone(), o.out.join("report.jsonl"));
     let report_t = thread::spawn(move || reporter(o2, s2, path));
 
@@ -742,6 +752,9 @@ fn run(o: Options) -> io::Result<bool> {
     }
     let _ = admin_t.join();
     let _ = churn_t.join();
+    if tracking_t.join().is_err() {
+        shared.tracking.errors.fetch_add(1, Relaxed);
+    }
     let records = report_t.join().unwrap_or_default();
 
     let mut summary = json!({
@@ -763,6 +776,13 @@ fn run(o: Options) -> io::Result<bool> {
         "admin_errors": shared.admin_errors.load(Relaxed),
         "connections_churned": shared.churned.load(Relaxed),
         "churn_errors": shared.churn_errors.load(Relaxed),
+        "tracking": {
+            "rounds": shared.tracking.rounds.load(Relaxed),
+            "checks": shared.tracking.checks.load(Relaxed),
+            "invalidated": shared.tracking.invalidated.load(Relaxed),
+            "stale": shared.tracking.stale.load(Relaxed),
+            "errors": shared.tracking.errors.load(Relaxed),
+        },
         "worker_failures": worker_failures,
         "server_exit_during_run": crashed,
         "memory_used_trend": memory_trend(&records, "used_memory"),
@@ -779,7 +799,9 @@ fn run(o: Options) -> io::Result<bool> {
         && summary["mismatches"] == 0
         && summary["connection_errors"] == 0
         && summary["admin_errors"] == 0
-        && summary["churn_errors"] == 0;
+        && summary["churn_errors"] == 0
+        && summary["tracking"]["stale"] == 0
+        && summary["tracking"]["errors"] == 0;
 
     if crashed.is_none() {
         wait_background_done(&o)?;
