@@ -32,11 +32,6 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 # Where Rexyra knowingly answers differently, and why. Keyed by the command
 # line (as a tuple of arguments) or by command name for COMMAND INFO.
 KNOWN = {
-    "bgsave": "no_multi: Rexyra refuses BGSAVE inside MULTI, Redis runs it at EXEC",
-    "bgrewriteaof": "no_multi: Rexyra refuses BGREWRITEAOF inside MULTI",
-    "subscribe": "no denyoom: Rexyra lets subscriptions through when out of memory",
-    "psubscribe": "no denyoom: as SUBSCRIBE",
-    "ssubscribe": "no denyoom: as SUBSCRIBE",
     ("MEMORY", "STATS"): "Rexyra has no MEMORY STATS, so it is an unknown subcommand",
 }
 

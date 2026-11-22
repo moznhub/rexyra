@@ -611,8 +611,9 @@ pub(crate) fn bgrewriteaof(ctx: &mut Ctx<'_>, _args: &[Bytes]) -> rexyra_resp::F
     if aof.is_rewriting() {
         return Frame::error("ERR Background append only file rewriting already in progress");
     }
-    if ctx.server.bgsave.is_some() {
-        // Runs as soon as the save in progress has finished.
+    if ctx.server.bgsave.is_some() || ctx.server.in_exec {
+        // Runs as soon as the save in progress has finished, or after the
+        // transaction, as in Redis.
         ctx.server.aof_rewrite_scheduled = true;
         return Frame::simple("Background append only file rewriting scheduled");
     }
@@ -1541,7 +1542,9 @@ mod tests {
         );
         assert_eq!(
             h.run("BGSAVE"),
-            err("ERR Can't BGSAVE while AOF log rewriting is in progress")
+            err(
+                "ERR Another child process is active (AOF?): can't BGSAVE right now. Use BGSAVE SCHEDULE in order to schedule a BGSAVE whenever possible."
+            )
         );
         // Changes made while it runs go to the new incremental file.
         h.run("SET key:0 during");
@@ -1626,6 +1629,83 @@ mod tests {
         finish_rewrite(&mut h);
         tick_now(&mut h);
         assert!(h.server.aof.as_ref().unwrap().is_rewriting());
+        finish_rewrite(&mut h);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// What `BGSAVE` and `BGREWRITEAOF` do inside a transaction and while
+    /// the other is running, as recorded from Redis 7.4.
+    #[test]
+    fn saves_and_rewrites_asked_for_in_a_transaction_are_scheduled() {
+        let dir = temp_dir("in-exec");
+        let mut h = start(&dir);
+        let scheduled_save = || Frame::simple("Background saving scheduled");
+        let scheduled_rewrite = || Frame::simple("Background append only file rewriting scheduled");
+        h.run("SET k v");
+
+        // Inside EXEC neither starts in the middle of the transaction.
+        h.run("MULTI");
+        assert_eq!(h.run("BGSAVE"), Frame::simple("QUEUED"));
+        assert_eq!(h.run("BGREWRITEAOF"), Frame::simple("QUEUED"));
+        assert_eq!(h.run("SET k2 v"), Frame::simple("QUEUED"));
+        assert_eq!(
+            h.run("EXEC"),
+            Frame::Array(vec![scheduled_save(), scheduled_rewrite(), Frame::ok()])
+        );
+        assert!(h.server.bgsave.is_none());
+        assert!(h.server.bgsave_scheduled && h.server.aof_rewrite_scheduled);
+        assert!(!h.server.in_exec);
+        // The tick starts the save, then the rewrite once the save is done.
+        persistence::autosave(&mut h.server, &mut h.keyspace, h.now);
+        assert!(h.server.bgsave.is_some());
+        assert!(
+            !h.server.aof.as_ref().unwrap().is_rewriting(),
+            "a save, not a rewrite"
+        );
+        finish_rewrite(&mut h);
+        tick(&mut h.server, &mut h.keyspace, h.now);
+        assert!(h.server.aof.as_ref().unwrap().is_rewriting());
+
+        // While a rewrite runs: BGSAVE is refused unless scheduled, ...
+        assert_eq!(
+            h.run("BGSAVE"),
+            err(
+                "ERR Another child process is active (AOF?): can't BGSAVE right now. Use \
+                 BGSAVE SCHEDULE in order to schedule a BGSAVE whenever possible."
+            )
+        );
+        assert_eq!(h.run("BGSAVE SCHEDULE"), scheduled_save());
+        assert_eq!(
+            h.run("BGREWRITEAOF"),
+            err("ERR Background append only file rewriting already in progress")
+        );
+        // ... and inside EXEC the save is scheduled, the rewrite refused.
+        h.run("MULTI");
+        h.run("BGSAVE");
+        h.run("BGREWRITEAOF");
+        assert_eq!(
+            h.run("EXEC"),
+            Frame::Array(vec![
+                scheduled_save(),
+                err("ERR Background append only file rewriting already in progress")
+            ])
+        );
+        finish_rewrite(&mut h);
+
+        // While a save runs: inside EXEC, BGSAVE is refused and the rewrite
+        // scheduled.
+        h.server.bgsave_scheduled = false;
+        assert_eq!(h.run("BGSAVE"), Frame::simple("Background saving started"));
+        h.run("MULTI");
+        h.run("BGSAVE");
+        h.run("BGREWRITEAOF");
+        assert_eq!(
+            h.run("EXEC"),
+            Frame::Array(vec![
+                err("ERR Background save already in progress"),
+                scheduled_rewrite()
+            ])
+        );
         finish_rewrite(&mut h);
         let _ = fs::remove_dir_all(dir);
     }

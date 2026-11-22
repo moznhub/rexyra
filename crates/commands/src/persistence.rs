@@ -1236,11 +1236,29 @@ pub(crate) fn save_command(ctx: &mut Ctx<'_>, _args: &[Bytes]) -> Frame {
 /// `BGSAVE [SCHEDULE]` — starts writing the snapshot in the background and
 /// replies at once.
 pub(crate) fn bgsave(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
-    match &args[1..] {
-        [] => {}
-        // There is nothing a save would have to queue behind yet.
-        [option] if is(option, "SCHEDULE") => {}
+    let schedule = match &args[1..] {
+        [] => false,
+        [option] if is(option, "SCHEDULE") => true,
         _ => return Frame::error(ERR_SYNTAX),
+    };
+    // As in Redis: a save in progress is an error; behind a rewrite, or
+    // inside `EXEC`, the save is scheduled (with `SCHEDULE`, or always in a
+    // transaction) and started by the periodic tick once it can be.
+    let rewriting = match &ctx.server.bgsave {
+        Some(running) if !running.for_aof => {
+            return Frame::error("ERR Background save already in progress")
+        }
+        Some(_) => true,
+        None => false,
+    };
+    if rewriting || ctx.server.in_exec {
+        if schedule || ctx.server.in_exec {
+            ctx.server.bgsave_scheduled = true;
+            return Frame::simple("Background saving scheduled");
+        }
+        return Frame::error(
+            "ERR Another child process is active (AOF?): can't BGSAVE right now. Use BGSAVE SCHEDULE in order to schedule a BGSAVE whenever possible.",
+        );
     }
     match start_bgsave(ctx.server, ctx.keyspace, ctx.now) {
         Ok(()) => Frame::simple("Background saving started"),

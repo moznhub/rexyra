@@ -108,6 +108,7 @@ pub(crate) fn exec(ctx: &mut Ctx<'_>, _args: &[Bytes]) -> Frame {
         aof.begin_batch();
     }
     let mut replies = Vec::with_capacity(transaction.queued.len());
+    ctx.server.in_exec = true;
     for args in &transaction.queued {
         // Queueing already checked that the command exists and its arity.
         let frame = match lookup(&args[0]) {
@@ -123,6 +124,7 @@ pub(crate) fn exec(ctx: &mut Ctx<'_>, _args: &[Bytes]) -> Frame {
         ctx.block = None;
         replies.push(frame);
     }
+    ctx.server.in_exec = false;
     if let Some(aof) = &mut ctx.server.aof {
         aof.end_batch();
     }
