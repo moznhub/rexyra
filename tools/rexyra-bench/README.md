@@ -108,6 +108,16 @@ target\release\rexyra-bench.exe ops --runs 5 --label off
 target\release\rexyra-bench.exe ops --runs 5 --label kea --notify KEA
 ```
 
+`--tracker yes` adds one client with client-side caching on (`CLIENT
+TRACKING ON`, redirected to a Pub/Sub connection that reads the
+invalidations), which reads every key the commands use over and over, so
+that each write invalidates a tracked key. That is how the cost of tracking
+was measured:
+
+```
+target\release\rexyra-bench.exe ops --runs 5 --label tracked --tracker yes
+```
+
 ## Limits
 
 - Closed-loop clients: each connection waits for its reply before sending

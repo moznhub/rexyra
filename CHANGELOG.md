@@ -8,6 +8,12 @@ All notable changes to Rexyra are recorded here. The format follows [Keep a Chan
 
 - `COMMAND GETKEYSANDFLAGS`, which go-redis calls: the keys of a command line with how the command uses each (`RW access delete`, `OW update`, ...), as Redis 7.4 gives them, also for `SET ... GET`, `BITFIELD`, `SORT ... STORE` and a `numkeys` that is not a plain number, where Redis reads the arguments with a procedure of the command's own.
 - **Key specifications** in `COMMAND INFO` for every command, the same as Redis 7.4's. The ACL key checks, `COMMAND GETKEYS` and `GETKEYSANDFLAGS` all find keys from them, and `tools/compare-command-info.py` compares `COMMAND INFO` of every command, and `GETKEYS` and `GETKEYSANDFLAGS` of 276 command lines, with a Redis server, in RESP2 and RESP3.
+- **Client-side caching**: `CLIENT TRACKING` with every option (`REDIRECT`, `BCAST`, `PREFIX`, `OPTIN`, `OPTOUT`, `NOLOOP`), `CLIENT CACHING`, `CLIENT GETREDIR` and `CLIENT TRACKINGINFO`. Invalidations go out as RESP3 pushes, or as `__redis__:invalidate` messages to a RESP2 redirect target, with the same content, to the same connections and in the same order as in Redis 7.4, relative to replies and keyspace notifications; broadcast prefixes are batched once per pass of the execution loop. `tracking-table-max-keys` (configuration file, command line, `CONFIG SET`, `CONFIG REWRITE`), the `t`, `B` and `R` flags and `redir` in `CLIENT LIST`, and the `tracking_*` fields of `INFO`. Compared with Redis by a new tool, `tools/rexyra-tracking`. go-redis's and redis-py's client-side caches now work. Unused, it costs one test of a flag per write.
+
+### Changed
+
+- `CONFIG SET maxmemory` with a limit below the memory in use evicts at once, as in Redis, instead of at the next command.
+- `HELLO`, `INFO` (`redis_version`) and scripts (`redis.REDIS_VERSION`) report Redis 7.4.0 instead of 7.2.0: redis-py enables its client-side cache only for 7.4 or later, and Rexyra already has 7.4's hash field expiry.
 
 ### Fixed
 

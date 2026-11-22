@@ -2482,7 +2482,7 @@ redis.register_function{
             ),
             bulk("probe")
         );
-        assert_eq!(h.server.logs, [(2, "loading 7.2.0".to_owned())]);
+        assert_eq!(h.server.logs, [(2, "loading 7.4.0".to_owned())]);
     }
 
     #[test]
@@ -2809,10 +2809,10 @@ redis.register_function('two', function() return 2 end)",
             ),
             int(3)
         );
-        assert_eq!(eval(&mut h, "return redis.REDIS_VERSION"), bulk("7.2.0"));
+        assert_eq!(eval(&mut h, "return redis.REDIS_VERSION"), bulk("7.4.0"));
         assert_eq!(
             eval(&mut h, "return redis.REDIS_VERSION_NUM"),
-            int(0x0007_0200)
+            int(0x0007_0400)
         );
     }
 }

@@ -94,6 +94,7 @@ pub async fn serve_with(
     server.protected_mode = config.protected_mode;
     server.enable_debug_command = config.enable_debug_command;
     server.notify_flags = config.notify_keyspace_events;
+    server.tracking.max_keys = config.tracking_table_max_keys;
     for user in &config.users {
         server
             .acl

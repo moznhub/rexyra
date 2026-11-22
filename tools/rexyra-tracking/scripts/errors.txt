@@ -1,0 +1,89 @@
+## 1. Argument errors
+x: CLIENT TRACKING
+x: CLIENT TRACKING maybe
+x: CLIENT TRACKING ON FOO
+x: CLIENT TRACKING ON REDIRECT
+x: CLIENT TRACKING ON REDIRECT abc
+x: CLIENT TRACKING ON REDIRECT -1
+x: CLIENT TRACKING ON REDIRECT 0
+x: CLIENT TRACKING ON PREFIX a
+x: CLIENT TRACKING ON BCAST PREFIX
+x: CLIENT TRACKING ON OPTIN OPTOUT
+x: CLIENT TRACKING ON BCAST OPTIN
+x: CLIENT TRACKING ON BCAST OPTOUT
+x: CLIENT TRACKING ON BCAST PREFIX ab PREFIX a
+x: CLIENT TRACKING ON BCAST PREFIX a PREFIX a
+x: CLIENT TRACKING OFF BCAST
+x: CLIENT TRACKING OFF NOLOOP
+x: CLIENT ID
+x: CLIENT TRACKING ON REDIRECT $x
+x: CLIENT CACHING YES
+x: CLIENT CACHING
+x: CLIENT CACHING maybe
+x: CLIENT TRACKINGINFO extra
+x: CLIENT GETREDIR extra
+## 2. Switching options while on
+y: HELLO 3 @@ proto id
+y: CLIENT TRACKING ON
+y: CLIENT TRACKING ON BCAST
+y: CLIENT TRACKING ON OPTIN
+y: CLIENT TRACKINGINFO
+y: CLIENT TRACKING ON NOLOOP
+y: CLIENT TRACKINGINFO
+y: CLIENT TRACKING OFF
+y: CLIENT TRACKINGINFO
+y: CLIENT TRACKING ON BCAST PREFIX p
+y: CLIENT TRACKING ON BCAST PREFIX q
+y: CLIENT TRACKINGINFO
+y: CLIENT TRACKING ON BCAST PREFIX pq
+y: CLIENT TRACKING ON BCAST PREFIX r
+y: CLIENT TRACKING ON
+y: CLIENT TRACKING ON BCAST
+y: CLIENT TRACKINGINFO
+y: CLIENT TRACKING OFF
+y: CLIENT TRACKING ON OPTIN
+y: CLIENT TRACKING ON OPTOUT
+y: CLIENT TRACKING ON
+y: CLIENT TRACKINGINFO
+y: CLIENT TRACKING OFF
+## OFF keeps keys read before? write after OFF
+y: CLIENT TRACKING ON
+y: GET off1
+y: CLIENT TRACKING OFF
+w: SET off1 1
+~drain
+y: CLIENT TRACKING ON
+w: SET off1 2
+~drain
+## 3. RESP2 client in subscribed mode cannot run CLIENT TRACKING?
+s: SUBSCRIBE ch
+s: CLIENT TRACKING ON
+## 4. CLIENT LIST flags for each kind
+bc: HELLO 3 @@ proto id
+bc: CLIENT TRACKING ON BCAST
+oi: HELLO 3 @@ proto id
+oi: CLIENT TRACKING ON OPTIN NOLOOP
+w: CLIENT LIST @@ id flags redir resp
+w: INFO clients @@ tracking_clients
+w: INFO stats @@ tracking_total_keys tracking_total_items tracking_total_prefixes
+## 5. Active expiry and the table size limit
+z: HELLO 3 @@ proto id
+z: CLIENT TRACKING ON
+w: SET ex1 v PX 100
+z: GET ex1
+~sleep 400
+~drain
+w: CONFIG GET tracking-table-max-keys
+z: MGET t1 t2 t3 t4 t5
+w: INFO stats @@ tracking_total_keys tracking_total_items tracking_total_prefixes
+w: CONFIG SET tracking-table-max-keys 2
+~sleep 300
+~drain
+w: INFO stats @@ tracking_total_keys tracking_total_items tracking_total_prefixes
+w: CONFIG SET tracking-table-max-keys 0
+z: MGET u1 u2 u3 u4 u5
+~sleep 300
+~drain
+w: INFO stats @@ tracking_total_keys tracking_total_items tracking_total_prefixes
+w: CONFIG SET tracking-table-max-keys -1
+w: CONFIG SET tracking-table-max-keys 1000000

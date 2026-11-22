@@ -6,19 +6,24 @@ use std::fmt::Write as _;
 use bytes::Bytes;
 use rexyra_resp::{Frame, Protocol};
 
+use crate::tracking::{redirect_of, ClientTracking};
 use crate::{
     int, is, lossy, reply, unwatch_all, wrong_subcommand_arity, ClientState, Ctx, Effect,
     ERR_SYNTAX,
 };
 
-/// One line of `CLIENT LIST`. Fields this server has no figure for (socket
-/// and input buffer sizes) are reported as zero.
-fn describe(client: &ClientState, now: u64, out: &mut String) {
+/// One line of `CLIENT LIST`, given the client's tracking state. Fields
+/// this server has no figure for (socket and input buffer sizes) are
+/// reported as zero.
+fn describe(client: &ClientState, tracking: Option<&ClientTracking>, now: u64, out: &mut String) {
     let mut flags = String::new();
     for (set, flag) in [
         (client.subscriptions.any(), 'P'),
         (client.blocked, 'b'),
         (client.multi.is_some(), 'x'),
+        (tracking.is_some(), 't'),
+        (tracking.is_some_and(|state| state.broken), 'R'),
+        (tracking.is_some_and(|state| state.bcast), 'B'),
         (client.no_evict, 'e'),
         (client.no_touch, 'T'),
     ] {
@@ -39,7 +44,7 @@ fn describe(client: &ClientState, now: u64, out: &mut String) {
         out,
         "id={} addr={} laddr={} fd=0 name={} age={} idle={} flags={flags} db={} sub={} psub={} \
          ssub={} multi={} watch={} qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 rbs=0 rbp=0 obl=0 \
-         oll=0 omem={omem} tot-mem={omem} events=r cmd={} user={} redir=-1 resp={} lib-name={} \
+         oll=0 omem={omem} tot-mem={omem} events=r cmd={} user={} redir={} resp={} lib-name={} \
          lib-ver={}",
         client.id,
         client.addr,
@@ -55,6 +60,7 @@ fn describe(client: &ClientState, now: u64, out: &mut String) {
         client.watches.len(),
         client.last_command,
         client.user,
+        redirect_of(tracking),
         match client.proto {
             Protocol::Resp2 => 2,
             Protocol::Resp3 => 3,
@@ -147,7 +153,12 @@ pub(crate) fn list(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
             if ids.as_ref().is_none_or(|ids| ids.contains(&client.id))
                 && wanted.is_none_or(|kind| kind == ClientType::of(client))
             {
-                describe(client, ctx.now, &mut out);
+                describe(
+                    client,
+                    ctx.server.tracking.client(client.id),
+                    ctx.now,
+                    &mut out,
+                );
             }
         }
         Ok(verbatim(out))
@@ -161,7 +172,8 @@ pub(crate) fn info(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
     }
     ctx.client.last_command = "client|info";
     let mut out = String::new();
-    describe(ctx.client, ctx.now, &mut out);
+    let tracking = ctx.server.tracking.client(ctx.client.id);
+    describe(ctx.client, tracking, ctx.now, &mut out);
     verbatim(out)
 }
 
@@ -345,6 +357,7 @@ pub(crate) fn reset(ctx: &mut Ctx<'_>, _args: &[Bytes]) -> Frame {
     ctx.client.no_evict = false;
     ctx.client.no_touch = false;
     crate::pubsub::forget(ctx.server, ctx.client);
+    crate::tracking::forget(ctx.server, ctx.client.id);
     crate::acl::start_session(ctx.server, ctx.client);
     Frame::simple("RESET")
 }
@@ -548,7 +561,7 @@ mod tests {
         h.run("SET b 1");
         h.client.multi.as_mut().unwrap();
         let mut line = String::new();
-        super::describe(&h.client, h.now, &mut line);
+        super::describe(&h.client, None, h.now, &mut line);
         assert!(line.contains(" flags=x "), "{line}");
         assert!(line.contains(" multi=2 "), "{line}");
         h.run("DISCARD");

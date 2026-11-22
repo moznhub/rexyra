@@ -24,7 +24,7 @@ usage:
                [--after-secs 3] [--monitor-ms 10] [--keep-data] [--no-toucher]
   rexyra-bench summarize [--raw docs/benchmarks/bgsave/raw] [--out FILE]
   rexyra-bench ops [--commands SET,GET,LPUSH] [--clients 50] [--pipeline 16] [--seconds 5]
-               [--warmup-secs 1] [--runs 3] [--notify FLAGS] [--label TEXT] [--port 6400]
+               [--warmup-secs 1] [--runs 3] [--notify FLAGS] [--tracker yes] [--label TEXT] [--port 6400]
                [--server target/release/rexyra-server.exe] [--data-root target/bench-data]";
 
 fn main() -> ExitCode {

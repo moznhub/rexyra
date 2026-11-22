@@ -30,6 +30,7 @@ pub(crate) fn flushdb(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
     } else {
         ctx.db().0.clear();
     }
+    crate::tracking::flushed(ctx);
     Frame::ok()
 }
 
@@ -45,6 +46,7 @@ pub(crate) fn flushall(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
     } else {
         ctx.keyspace.flush_all();
     }
+    crate::tracking::flushed(ctx);
     Frame::ok()
 }
 

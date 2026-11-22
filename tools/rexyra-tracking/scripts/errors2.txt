@@ -1,0 +1,96 @@
+## Which error wins when several apply
+x: CLIENT TRACKING ON BCAST OPTIN OPTOUT
+x: CLIENT TRACKING ON OPTIN OPTOUT PREFIX a
+x: CLIENT TRACKING ON OPTIN PREFIX a
+x: CLIENT TRACKING ON REDIRECT 999999 FOO
+x: CLIENT TRACKING ON FOO REDIRECT 999999
+x: CLIENT TRACKING OFF REDIRECT 999999
+x: CLIENT TRACKING maybe REDIRECT 999999
+x: CLIENT TRACKING maybe FOO
+x: CLIENT TRACKING maybe
+x: CLIENT TRACKING ON REDIRECT $x REDIRECT $x
+x: CLIENT TRACKING ON REDIRECT 0 REDIRECT $x
+x: CLIENT TRACKING ON BCAST PREFIX a PREFIX b PREFIX ab
+x: CLIENT TRACKING ON BCAST PREFIX "" PREFIX a
+x: CLIENT TRACKINGINFO
+## CLIENT CACHING while not tracking
+x: CLIENT CACHING YES
+x: CLIENT CACHING maybe
+x: CLIENT CACHING yes extra
+x: CLIENT GETREDIR
+## Changing options while on
+y: HELLO 3 @@ proto id
+y: CLIENT TRACKING ON
+y: CLIENT TRACKING ON BCAST OPTIN
+y: CLIENT TRACKING ON OPTIN
+y: CLIENT TRACKING ON BCAST OPTOUT
+y: CLIENT TRACKING ON OPTOUT
+y: CLIENT TRACKING OFF
+y: CLIENT TRACKING ON BCAST PREFIX p
+y: CLIENT TRACKING ON BCAST PREFIX q PREFIX qq
+y: CLIENT TRACKING ON BCAST PREFIX q PREFIX p
+y: CLIENT TRACKINGINFO
+y: CLIENT TRACKING ON BCAST PREFIX q NOLOOP
+y: CLIENT TRACKINGINFO
+y: CLIENT TRACKING ON BCAST
+y: CLIENT TRACKINGINFO
+y: CLIENT TRACKING ON BCAST PREFIX z
+y: CLIENT TRACKING OFF
+y: CLIENT TRACKINGINFO
+## Redirect replaced by a later ON, and a broken redirect repaired
+r1: CLIENT ID
+r2: CLIENT ID
+y: CLIENT TRACKING ON REDIRECT $r1
+y: CLIENT GETREDIR
+y: CLIENT TRACKING ON
+y: CLIENT GETREDIR
+y: CLIENT TRACKING ON REDIRECT $r1
+y: GET rk
+w: CLIENT KILL ID $r1
+~sleep 100
+w: SET rk 1
+~drain
+y: CLIENT TRACKINGINFO
+y: CLIENT TRACKING ON REDIRECT $r1
+y: CLIENT TRACKING ON REDIRECT $r2
+y: CLIENT TRACKINGINFO
+y: GET rk
+w: SET rk 2
+~drain
+y: CLIENT TRACKING OFF
+y: CLIENT GETREDIR
+## RESP3 subscribed client may turn tracking on
+s: HELLO 3 @@ proto id
+s: SUBSCRIBE ch
+s: CLIENT TRACKING ON
+s: GET sk
+w: SET sk 1
+~drain
+## Several clients on the same prefix, and on overlapping prefixes
+p1: HELLO 3 @@ proto id
+p1: CLIENT TRACKING ON BCAST PREFIX user:
+p2: HELLO 3 @@ proto id
+p2: CLIENT TRACKING ON BCAST PREFIX user: PREFIX order:
+p3: HELLO 3 @@ proto id
+p3: CLIENT TRACKING ON BCAST PREFIX user:1
+w: INFO stats @@ tracking_total_prefixes
+w| SET user:2 x ;; SET user:10 x ;; SET order:1 x ;; SET other x
+~drain
+p2: CLIENT TRACKING OFF
+w: INFO stats @@ tracking_total_prefixes
+w: SET order:2 x
+w: SET user:11 x
+~drain
+## Keys read twice, and by two clients, counted once per client
+t1: HELLO 3 @@ proto id
+t1: CLIENT TRACKING ON
+t2: HELLO 3 @@ proto id
+t2: CLIENT TRACKING ON
+t1: MGET c1 c1 c2
+t2: GET c1
+w: INFO stats @@ tracking_total_keys tracking_total_items
+t2: CLIENT TRACKING OFF
+w: INFO stats @@ tracking_total_keys tracking_total_items
+w: SET c1 1
+~drain
+w: INFO stats @@ tracking_total_keys tracking_total_items

@@ -66,6 +66,7 @@ const SETTINGS: &[(&str, Kind, &str)] = &[
     ("protected-mode", Kind::Plain, "yes"),
     ("enable-debug-command", Kind::Plain, "no"),
     ("notify-keyspace-events", Kind::Text, ""),
+    ("tracking-table-max-keys", Kind::Plain, "1000000"),
 ];
 
 /// Older names a file may use for a setting.

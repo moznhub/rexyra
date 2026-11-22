@@ -32,6 +32,7 @@ mod sha256;
 mod sort;
 mod strings;
 mod table;
+pub mod tracking;
 mod transactions;
 mod zsets;
 
@@ -53,7 +54,7 @@ pub use transactions::{unwatch_all, Transaction, Watch};
 
 /// Redis version whose command semantics we target. Reported by `HELLO` so
 /// client libraries enable the right feature set.
-pub const COMPAT_VERSION: &str = "7.2.0";
+pub const COMPAT_VERSION: &str = "7.4.0";
 
 /// Per-connection state. Owned by the execution thread.
 #[derive(Debug)]
@@ -236,6 +237,12 @@ pub fn lookup(name: &[u8]) -> Option<&'static CommandSpec> {
 /// Validates one command, then executes it, or queues it if the client is
 /// inside a transaction.
 pub fn dispatch(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
+    let frame = dispatch_command(ctx, args);
+    tracking::after_command(ctx, args);
+    frame
+}
+
+fn dispatch_command(ctx: &mut Ctx<'_>, args: &[Bytes]) -> Frame {
     let Some(name) = args.first() else {
         return Frame::error("ERR empty command");
     };
@@ -347,8 +354,12 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, spec: &CommandSpec, args: &[Bytes]) -> Fram
     // reads and stopped early.
     notify::reading(ctx, false);
     // Publish what the keyspace noted during the command (and log the
-    // keys that expired) before the command itself is logged.
+    // keys that expired, and invalidate what clients cache) before the
+    // command itself is logged.
     notify::settle(ctx);
+    // Then the keys it read are tracked: a key it found expired is
+    // invalidated first and tracked again.
+    tracking::remember(ctx, spec, args);
     ctx.keyspace.settle_watches();
     // A blocking command that is about to wait has not happened yet: it is
     // counted when it runs again and completes.

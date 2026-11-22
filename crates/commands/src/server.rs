@@ -139,6 +139,8 @@ pub struct Server {
     pub effects: Vec<Effect>,
     /// Every Pub/Sub subscription; see [`crate::pubsub`].
     pub pubsub: crate::pubsub::PubSub,
+    /// Client-side caching: who tracks what; see [`crate::tracking`].
+    pub tracking: crate::tracking::Tracking,
     /// Messages for clients, as `(client id, message)`, which the execution
     /// loop appends to each client's output after the reply of the command
     /// that produced them.
@@ -206,6 +208,7 @@ impl Default for Server {
             save_points: vec![(3600, 1), (300, 100), (60, 10_000)],
             effects: Vec::new(),
             pubsub: crate::pubsub::PubSub::default(),
+            tracking: crate::tracking::Tracking::default(),
             pushes: Vec::new(),
             scripting: None,
             busy_poll: None,

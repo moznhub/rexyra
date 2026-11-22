@@ -50,6 +50,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::{Bytes, BytesMut};
+use rexyra_commands::tracking::{self, Peers};
 use rexyra_commands::{
     aof, dispatch, notify, persistence, pubsub, unwatch_all, BlockKind, BlockRequest, BusyPoll,
     ClientState, Ctx, Effect, Server,
@@ -496,7 +497,11 @@ impl State {
                 Message::Tick => {
                     let now = now_ms();
                     persistence::autosave(&mut self.server, &mut self.keyspace, now);
-                    aof::tick(&mut self.server, &mut self.keyspace, now);
+                    let peers = Peers {
+                        others: &self.clients,
+                        current: None,
+                    };
+                    aof::tick(&mut self.server, &mut self.keyspace, &peers, now);
                     // `DEBUG SET-ACTIVE-EXPIRE 0` leaves expired keys to
                     // be deleted when they are next looked up.
                     let max_expired = if self.server.active_expire {
@@ -507,8 +512,15 @@ impl State {
                     let expired = self.keyspace.cron(now, max_expired);
                     self.server.stats.expired_keys += expired as u64;
                     // The keys just deleted are logged and, when asked
-                    // for, announced (`expired`).
-                    notify::flush(&mut self.server, &mut self.keyspace);
+                    // for, announced (`expired`), and copies clients cache
+                    // are invalidated; then the table of tracked keys is
+                    // kept within its limit.
+                    let peers = Peers {
+                        others: &self.clients,
+                        current: None,
+                    };
+                    notify::flush(&mut self.server, &mut self.keyspace, &peers);
+                    tracking::tick(&mut self.server, &mut self.keyspace, &peers);
                     if !self.server.pushes.is_empty() {
                         self.deliver_detached_pushes();
                     }
@@ -553,6 +565,7 @@ impl State {
                     if let Some(mut client) = self.clients.remove(&id) {
                         unwatch_all(&mut client, &mut self.keyspace);
                         pubsub::forget(&mut self.server, &mut client);
+                        tracking::forget(&mut self.server, id);
                     }
                 }
                 Message::Hangup { id } => {
@@ -582,6 +595,9 @@ impl State {
     /// sends their output: the append-only file is written (and synced,
     /// with `appendfsync always`) before any reply leaves.
     fn commit(&mut self) {
+        if tracking::recording(&self.server) {
+            self.broadcast();
+        }
         if let Some(aof) = &mut self.server.aof {
             aof.flush(now_ms());
         }
@@ -611,6 +627,22 @@ impl State {
             if subscriber {
                 self.check_output_limit(id, queued, now);
             }
+        }
+    }
+
+    /// Client-side caching's work between commands: invalidates anything
+    /// changed outside a command (a key found expired while serving a
+    /// blocked client), then sends broadcasting clients the keys changed
+    /// under their prefixes since the last time.
+    fn broadcast(&mut self) {
+        let peers = Peers {
+            others: &self.clients,
+            current: None,
+        };
+        notify::flush(&mut self.server, &mut self.keyspace, &peers);
+        tracking::broadcast(&mut self.server, &peers);
+        if !self.server.pushes.is_empty() {
+            self.deliver_detached_pushes();
         }
     }
 

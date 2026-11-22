@@ -195,7 +195,6 @@ def test_quit_like_close_and_reuse(server, protocol, p):
     r.close()
 
 
-@differs("CLIENT TRACKING is not implemented, so redis-py's cache_config cannot connect")
 def test_client_side_caching(server, p):
     # redis-py's own cache (5.1+): CLIENT TRACKING ON over RESP3, and the
     # server's invalidation pushes drop entries another client changed.
