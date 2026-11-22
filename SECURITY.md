@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Rexyra is pre-release software. Security fixes are made on the `main` branch only; there are no maintained release branches yet.
+Security fixes are released for the latest 1.x version, as a new patch or minor version; upgrade to get them. There are no maintained branches for older versions, and versions before 1.0 receive no fixes.
 
 ## Reporting a vulnerability
 

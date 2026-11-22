@@ -9,7 +9,8 @@ Sizes are relative: **S** is a few focused hours, **M** a few days, **L** a week
 | [0.2.0](#020-loose-ends) | Loose ends of the service and installer release | S |
 | [0.3.0](#030-pubsub) | Pub/Sub (released) | L |
 | [0.4.0](#040-client-libraries-and-keyspace-notifications) | Client libraries and keyspace notifications (released) | L |
-| [0.5.0](#050-settings-that-survive-and-a-server-you-can-leave-alone) | Settings that survive a restart, and day-to-day operation | M |
+| 1.0.0 | First stable release: client-side caching, key specifications (released) | M |
+| [1.1.0](#110-settings-that-survive-and-a-server-you-can-leave-alone) | Settings that survive a restart, and day-to-day operation | M |
 | [Later](#later) | TLS, more commands, the limits of the snapshot design | |
 
 ## How work is checked
@@ -67,7 +68,7 @@ Today a connection only ever receives the reply to something it sent: it hands a
 | S | **Commands the libraries ask for** on connecting or in common use and Rexyra lacks, as the smoke tests reveal them. Done: `MOVE`, `SWAPDB`, `COMMAND GETKEYS` and `COMMAND GETKEYSANDFLAGS`, with Redis's key specifications in `COMMAND INFO`. | |
 | L | **Client-side caching** (`CLIENT TRACKING`), which go-redis and redis-py use when asked to cache. Done: every option, compared with Redis 7.4 by [rexyra-tracking](../tools/rexyra-tracking/src/main.rs); see [the design](design/client-side-caching.md) and [COMPATIBILITY.md](COMPATIBILITY.md#client-side-caching). | go-redis and redis-py with caching on get cache hits and see changes made by other clients. |
 
-## 0.5.0: settings that survive, and a server you can leave alone
+## 1.1.0: settings that survive, and a server you can leave alone
 
 Things found while building the service and the installer, and the items that were already next on the roadmap.
 

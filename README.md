@@ -18,9 +18,32 @@ Rexyra speaks the Redis protocol (RESP2 and RESP3) and implements 201 Redis comm
 
 ## Status
 
-Pre-release. Rexyra passes its own test suite of about 480 tests and has been exercised with `redis-cli` and `redis-benchmark`; it has not been used in production. Of the client libraries, StackExchange.Redis is tested in CI (see [clients](clients/README.md)); the others have not been tested systematically yet.
+**Version 1.0**, the first stable release. From 1.0 on, version numbers follow [Semantic Versioning](https://semver.org/): within 1.x, what is listed under [Versions and compatibility](#versions-and-compatibility) does not change in an incompatible way.
+
+How it is tested, on every change:
+
+- about 650 tests of its own;
+- five client libraries, two versions of each: StackExchange.Redis, redis-py, Jedis, Lettuce and go-redis (see [clients](clients/README.md));
+- the installer, on a clean Windows machine: installed, restarted, upgraded (from a build of the same code and from the latest published release), and removed.
+
+Behaviour is compared with Redis 7.4 command by command, and the comparisons are kept as tools that can be run again. Before each release, a six-hour soak test runs a mixed workload with every reply checked and a client that uses client-side caching ([results](docs/benchmarks/soak/README.md)).
+
+Rexyra is new. It has not yet run in production anywhere we know of, so try it with your own workload before relying on it.
 
 It is a **single-instance** server: replication, cluster mode, streams, modules and TLS are not implemented. See [what differs from Redis](docs/COMPATIBILITY.md) and the [roadmap](docs/ROADMAP.md).
+
+## Versions and compatibility
+
+Within 1.x:
+
+- **Commands** keep replying as documented: as Redis 7.4 does, apart from the differences listed in [COMPATIBILITY.md](docs/COMPATIBILITY.md). A change that brings a reply closer to Redis's counts as a fix, and is listed in the [changelog](CHANGELOG.md).
+- **Settings and command-line options** keep their names and meaning. None is removed; a new one has a default that leaves behaviour as it was.
+- **Data files**: a snapshot or append-only file written by a 1.x version loads in every later 1.x version. Files stay in Redis's formats, loadable by Redis 7.4.
+- **The Windows service** keeps its name (`Rexyra`), its account (`LocalService`) and its folders, and an upgrade keeps the settings and the data.
+
+Not covered: the wording of log lines and of `INFO` fields that Redis does not have, performance figures, and the tools in [tools](tools).
+
+Security fixes are made for the latest 1.x version; see [SECURITY.md](SECURITY.md).
 
 ## Quick start
 

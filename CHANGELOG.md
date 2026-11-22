@@ -1,8 +1,12 @@
 # Changelog
 
-All notable changes to Rexyra are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before 1.0, a minor version may change behaviour.
+All notable changes to Rexyra are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html). From 1.0, what stays compatible within a major version is set out in the [README](https://github.com/moznhub/rexyra/blob/main/README.md#versions-and-compatibility); before 1.0 a minor version could change behaviour.
 
 ## [Unreleased]
+
+## [1.0.0] - 2026-11-22
+
+The first stable release. From this version on, settings, data files, command-line options and the Windows service stay compatible within 1.x (see the [README](https://github.com/moznhub/rexyra/blob/main/README.md#versions-and-compatibility)). New in it: client-side caching, `COMMAND GETKEYSANDFLAGS` with Redis's key specifications, and fixes that bring `BGSAVE`, `BGREWRITEAOF` and `SUBSCRIBE` in line with Redis. Every client library tested, StackExchange.Redis, redis-py, Jedis, Lettuce and go-redis, now passes its full suite apart from streams, HyperLogLog and geospatial commands, which Rexyra does not have.
 
 ### Added
 
@@ -111,7 +115,8 @@ The first public release: a Redis-compatible in-memory data server for Windows, 
 - Users created with `ACL SETUSER` are not saved across restarts; put them in the configuration file.
 - Everything known to differ from Redis is listed in [docs/COMPATIBILITY.md](https://github.com/moznhub/rexyra/blob/main/docs/COMPATIBILITY.md), and what is not done in [docs/ROADMAP.md](https://github.com/moznhub/rexyra/blob/main/docs/ROADMAP.md).
 
-[Unreleased]: https://github.com/moznhub/rexyra/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/moznhub/rexyra/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/moznhub/rexyra/releases/tag/v1.0.0
 [0.4.0]: https://github.com/moznhub/rexyra/releases/tag/v0.4.0
 [0.3.0]: https://github.com/moznhub/rexyra/releases/tag/v0.3.0
 [0.2.0]: https://github.com/moznhub/rexyra/releases/tag/v0.2.0
