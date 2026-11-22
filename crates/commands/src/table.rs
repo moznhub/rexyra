@@ -95,7 +95,10 @@ const SCRIPT_RUN_RO: Flags = &[
     "skip_monitor",
     "no_mandatory_keys",
 ];
-const PUBSUB_SUBSCRIBE: Flags = &["pubsub", "noscript", "loading", "stale"];
+// Subscribing takes memory, so it is refused when out of memory, as in
+// Redis; unsubscribing is not.
+const PUBSUB_SUBSCRIBE: Flags = &["denyoom", "pubsub", "noscript", "loading", "stale"];
+const PUBSUB_UNSUBSCRIBE: Flags = &["pubsub", "noscript", "loading", "stale"];
 const PUBSUB_PUBLISH: Flags = &["pubsub", "loading", "stale", "fast"];
 const WRITE_BLOCKING: Flags = &["write", "blocking"];
 const WRITE_FAST_BLOCKING: Flags = &["write", "fast", "blocking"];
@@ -267,11 +270,11 @@ pub static COMMANDS: &[CommandSpec] = &[
     cmd("time", 1, &["loading", "stale", "fast"], NO_KEYS, NONE, "server", "2.6.0", "Returns the server time.", admin::time),
     // --- pub/sub ----------------------------------------------------------
     cmd("subscribe", -2, PUBSUB_SUBSCRIBE, NO_KEYS, NONE, "pubsub", "2.0.0", "Listens for messages published to channels.", pubsub::subscribe_cmd),
-    cmd("unsubscribe", -1, PUBSUB_SUBSCRIBE, NO_KEYS, NONE, "pubsub", "2.0.0", "Stops listening to messages posted to channels.", pubsub::unsubscribe_cmd),
+    cmd("unsubscribe", -1, PUBSUB_UNSUBSCRIBE, NO_KEYS, NONE, "pubsub", "2.0.0", "Stops listening to messages posted to channels.", pubsub::unsubscribe_cmd),
     cmd("psubscribe", -2, PUBSUB_SUBSCRIBE, NO_KEYS, NONE, "pubsub", "2.0.0", "Listens for messages published to channels that match one or more patterns.", pubsub::psubscribe),
-    cmd("punsubscribe", -1, PUBSUB_SUBSCRIBE, NO_KEYS, NONE, "pubsub", "2.0.0", "Stops listening to messages published to channels that match one or more patterns.", pubsub::punsubscribe),
+    cmd("punsubscribe", -1, PUBSUB_UNSUBSCRIBE, NO_KEYS, NONE, "pubsub", "2.0.0", "Stops listening to messages published to channels that match one or more patterns.", pubsub::punsubscribe),
     cmd("ssubscribe", -2, PUBSUB_SUBSCRIBE, ALL_KEYS, &[spec(NOT_KEY, at(1), REST)], "pubsub", "7.0.0", "Listens for messages published to shard channels.", pubsub::ssubscribe),
-    cmd("sunsubscribe", -1, PUBSUB_SUBSCRIBE, ALL_KEYS, &[spec(NOT_KEY, at(1), REST)], "pubsub", "7.0.0", "Stops listening to messages posted to shard channels.", pubsub::sunsubscribe),
+    cmd("sunsubscribe", -1, PUBSUB_UNSUBSCRIBE, ALL_KEYS, &[spec(NOT_KEY, at(1), REST)], "pubsub", "7.0.0", "Stops listening to messages posted to shard channels.", pubsub::sunsubscribe),
     cmd("publish", 3, PUBSUB_PUBLISH, NO_KEYS, NONE, "pubsub", "2.0.0", "Posts a message to a channel.", pubsub::publish),
     cmd("spublish", 3, PUBSUB_PUBLISH, KEY1, &[spec(NOT_KEY, at(1), ONE)], "pubsub", "7.0.0", "Post a message to a shard channel", pubsub::spublish),
     cmd("pubsub", -2, &[], NO_KEYS, NONE, "pubsub", "2.8.0", "A container for Pub/Sub commands.", pubsub::pubsub),
@@ -280,8 +283,8 @@ pub static COMMANDS: &[CommandSpec] = &[
 
     // --- persistence ------------------------------------------------------
     cmd("save", 1, &["admin", "noscript", "no_async_loading", "no_multi"], NO_KEYS, NONE, "server", "1.0.0", "Synchronously saves the database(s) to disk.", persistence::save_command),
-    cmd("bgsave", -1, &["admin", "noscript", "no_async_loading", "no_multi"], NO_KEYS, NONE, "server", "1.0.0", "Asynchronously saves the database(s) to disk.", persistence::bgsave),
-    cmd("bgrewriteaof", 1, &["admin", "noscript", "no_async_loading", "no_multi"], NO_KEYS, NONE, "server", "1.0.0", "Asynchronously rewrites the append-only file to disk.", aof::bgrewriteaof),
+    cmd("bgsave", -1, &["admin", "noscript", "no_async_loading"], NO_KEYS, NONE, "server", "1.0.0", "Asynchronously saves the database(s) to disk.", persistence::bgsave),
+    cmd("bgrewriteaof", 1, &["admin", "noscript", "no_async_loading"], NO_KEYS, NONE, "server", "1.0.0", "Asynchronously rewrites the append-only file to disk.", aof::bgrewriteaof),
     cmd("lastsave", 1, &["loading", "stale", "fast"], NO_KEYS, NONE, "server", "1.0.0", "Returns the Unix timestamp of the last successful save to disk.", persistence::lastsave),
     cmd("shutdown", -1, &["admin", "noscript", "loading", "stale", "no_multi", "allow_busy"], NO_KEYS, NONE, "server", "1.0.0", "Synchronously saves the database(s) to disk and shuts down the server.", persistence::shutdown),
     cmd("dump", 2, READ, KEY1, RO_ACCESS_1, "generic", "2.6.0", "Returns a serialized representation of the value stored at a key.", persistence::dump),

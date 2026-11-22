@@ -287,6 +287,12 @@ mod tests {
         assert_eq!(h.run("DEL key:0000"), Frame::Integer(1));
         assert_eq!(h.run("EXPIRE key:0001 100"), Frame::Integer(1));
         assert_eq!(dbsize(&mut h), 99);
+        // Subscribing is refused too, as in Redis; unsubscribing is not.
+        for subscribe in ["SUBSCRIBE c", "PSUBSCRIBE p*", "SSUBSCRIBE s"] {
+            assert_eq!(h.run(subscribe), err(OOM), "{subscribe}");
+        }
+        let unsubscribed = h.run("UNSUBSCRIBE c");
+        assert!(!matches!(unsubscribed, Frame::Error(_)), "{unsubscribed:?}");
         // ... and a transaction that would write is refused as a whole.
         h.run("MULTI");
         assert_eq!(h.run("SET another v"), err(OOM));

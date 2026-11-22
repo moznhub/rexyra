@@ -122,8 +122,13 @@ pub struct Server {
     /// and when it has finished. Without one, the save is looked at again
     /// at the next command or periodic tick.
     pub save_waker: Option<crate::persistence::SaveWaker>,
-    /// A background save was interrupted and should start again.
+    /// A background save was interrupted, or asked for while it could not
+    /// start, and should start as soon as it can.
     pub bgsave_scheduled: bool,
+    /// The queued commands of an `EXEC` are running. A background save or
+    /// rewrite asked for then is scheduled, as in Redis, rather than started
+    /// in the middle of the transaction.
+    pub in_exec: bool,
     /// When a background save was last started, in milliseconds.
     pub last_bgsave_try: u64,
     /// Automatic saves: `(seconds, changes)` pairs. A background save
@@ -196,6 +201,7 @@ impl Default for Server {
             rdb_key_save_delay: 0,
             save_waker: None,
             bgsave_scheduled: false,
+            in_exec: false,
             last_bgsave_try: 0,
             save_points: vec![(3600, 1), (300, 100), (60, 10_000)],
             effects: Vec::new(),
