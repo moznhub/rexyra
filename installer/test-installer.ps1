@@ -11,7 +11,8 @@
     but leaves the data.
 #>
 param(
-    # The installer under test, and one of an earlier version to upgrade from.
+    # The installer under test, and one of an earlier version to upgrade from:
+    # a build of the same code under a lower version, or a published release.
     [Parameter(Mandatory)] [string] $Msi,
     [Parameter(Mandatory)] [string] $OldMsi,
     [int] $Port = 6400,
@@ -24,6 +25,22 @@ $OldMsi = (Resolve-Path $OldMsi).Path
 $dataFolder = Join-Path $env:ProgramData 'Rexyra'
 $config = Join-Path $dataFolder 'rexyra.conf'
 $failed = [System.Collections.Generic.List[string]]::new()
+
+# The ProductVersion an MSI file installs, read from the file itself.
+function Get-MsiVersion([string] $path) {
+    $installer = New-Object -ComObject WindowsInstaller.Installer
+    $database = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @($path, 0))
+    $view = $database.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $database, @("SELECT Value FROM Property WHERE Property = 'ProductVersion'"))
+    $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null) | Out-Null
+    $record = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
+    $version = $record.GetType().InvokeMember('StringData', 'GetProperty', $null, $record, 1)
+    $view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null) | Out-Null
+    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($database) | Out-Null
+    $version
+}
+$newVersion = Get-MsiVersion $Msi
+$oldVersion = Get-MsiVersion $OldMsi
+Write-Host "upgrading from $oldVersion to $newVersion"
 
 function Check([string] $what, [bool] $ok, [string] $detail = '') {
     if ($ok) {
@@ -160,7 +177,7 @@ try {
     Invoke-Msi @('/i', "`"$Msi`"") 'upgrade.log'
     $installed = @(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' | Where-Object { $_.DisplayName -eq 'Rexyra' })
     Check 'one version is installed afterwards' ($installed.Count -eq 1) "$($installed.Count)"
-    Check 'and it is not the earlier one' ($installed[0].DisplayVersion -ne '0.0.1') $installed[0].DisplayVersion
+    Check "and it is the new one, $newVersion" ($installed[0].DisplayVersion -eq $newVersion) $installed[0].DisplayVersion
     $service = Get-CimInstance Win32_Service -Filter "Name='Rexyra'"
     Check 'the program stays in the folder chosen before' ($service.PathName -like "*$InstallFolder\rexyra-server.exe*") $service.PathName
     Check 'the service is running' ($service.State -eq 'Running') $service.State

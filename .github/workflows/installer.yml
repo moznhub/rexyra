@@ -59,3 +59,59 @@ jobs:
       - name: Set up as a service by hand, as the guide describes
         shell: pwsh
         run: installer/test-manual-service.ps1 -Server target\dist\release\rexyra-server.exe
+
+  upgrade:
+    # The job above upgrades from a build of this same code. This one
+    # upgrades from the installer people actually have: the newest published
+    # release, so that its settings and data are shown to survive.
+    name: Upgrade from the latest release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: dist
+
+      - name: Build
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release -p rexyra-server --target-dir target/dist
+
+      - name: Install WiX
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add -g WixToolset.UI.wixext/5.0.2
+          wix extension add -g WixToolset.Util.wixext/5.0.2
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          installer/build.ps1 -Version $version -Server target\dist\release\rexyra-server.exe -Out rexyra.msi
+
+      # The newest release of another version than this one: once this
+      # version is itself published, the one before it.
+      - name: Download the latest published installer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          $tags = gh release list --repo ${{ github.repository }} --exclude-drafts --limit 20 --json tagName --jq '.[].tagName'
+          $tag = $tags | Where-Object { $_ -ne "v$version" } | Select-Object -First 1
+          if (-not $tag) { throw 'no earlier release to upgrade from' }
+          Write-Host "upgrading from $tag"
+          gh release download $tag --repo ${{ github.repository }} --pattern '*.msi' --output previous.msi
+
+      - name: Install the release, upgrade, uninstall
+        shell: pwsh
+        run: installer/test-installer.ps1 -Msi rexyra.msi -OldMsi previous.msi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upgrade-from-release
+          path: '*.log'
+          if-no-files-found: ignore
