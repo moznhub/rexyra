@@ -4,6 +4,10 @@ All notable changes to Rexyra are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-27
+
+A security release: upgrade from 1.0.0. Data files, settings and the Windows service are unchanged. The one thing a working script could notice is that `getfenv`, `setfenv` and `newproxy` are gone, as they are in Redis.
+
 ### Security
 
 Four ways a client that may run scripts or `RESTORE` could take the server down or reach beyond its own permissions. All four need a connection that is already allowed to run the command, which with the default settings means a program on the same machine.
@@ -124,7 +128,8 @@ The first public release: a Redis-compatible in-memory data server for Windows, 
 - Users created with `ACL SETUSER` are not saved across restarts; put them in the configuration file.
 - Everything known to differ from Redis is listed in [docs/COMPATIBILITY.md](https://github.com/moznhub/rexyra/blob/main/docs/COMPATIBILITY.md), and what is not done in [docs/ROADMAP.md](https://github.com/moznhub/rexyra/blob/main/docs/ROADMAP.md).
 
-[Unreleased]: https://github.com/moznhub/rexyra/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/moznhub/rexyra/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/moznhub/rexyra/releases/tag/v1.0.1
 [1.0.0]: https://github.com/moznhub/rexyra/releases/tag/v1.0.0
 [0.4.0]: https://github.com/moznhub/rexyra/releases/tag/v0.4.0
 [0.3.0]: https://github.com/moznhub/rexyra/releases/tag/v0.3.0
