@@ -2,8 +2,19 @@
 //! by default, so reading its files needs this. This server writes strings
 //! uncompressed.
 
+/// The most one byte of input can expand to: a back-reference of three
+/// bytes copies up to 264.
+const MAX_EXPANSION: usize = 264;
+
 /// Decompresses `input`, which must expand to exactly `expected` bytes.
+///
+/// `expected` comes from the file or payload being read, so it is checked
+/// against what `input` could possibly expand to before any memory is
+/// reserved for it.
 pub(crate) fn decompress(input: &[u8], expected: usize) -> Option<Vec<u8>> {
+    if expected > input.len().saturating_mul(MAX_EXPANSION) {
+        return None;
+    }
     let mut out: Vec<u8> = Vec::with_capacity(expected);
     let mut at = 0;
     while at < input.len() {
@@ -52,6 +63,14 @@ mod tests {
         );
         // "ab", then copy 4 bytes from two back: "ababab".
         assert_eq!(decompress(&[1, b'a', b'b', 0x40, 1], 6).unwrap(), b"ababab");
+    }
+
+    #[test]
+    fn a_length_the_input_cannot_reach_is_refused_without_reserving_it() {
+        // The expected length comes from the file or the RESTORE payload.
+        assert!(decompress(&[0, b'a'], usize::MAX).is_none());
+        assert!(decompress(&[0, b'a'], 1 << 40).is_none());
+        assert!(decompress(&[0, b'a', 0xE0, 0, 0], 1 << 30).is_none());
     }
 
     #[test]

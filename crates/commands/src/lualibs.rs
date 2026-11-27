@@ -16,6 +16,19 @@ fn fail<T>(message: impl Into<String>) -> Result<T> {
     Err(LuaError::runtime(message.into()))
 }
 
+/// An error raised as it is, without the position [`located`] adds: what
+/// Lua's own C libraries do when they run out of stack.
+#[derive(Debug)]
+struct Unlocated(String);
+
+impl std::fmt::Display for Unlocated {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Unlocated {}
+
 /// Creates a library function whose errors start with the position of the
 /// script line that called it (`user_script:3: ...`), as errors from Lua's
 /// own C libraries do.
@@ -1046,6 +1059,11 @@ mod cmsgpack {
 
     /// Tables nested deeper than this are encoded as nil.
     const MAX_NESTING: usize = 16;
+    /// Arrays and maps nested deeper than this are not decoded: each level
+    /// keeps a table alive while it is read, and the interpreter has room
+    /// for a limited number. Redis's decoder stops when the Lua stack is
+    /// full, a few thousand levels in, with the same error.
+    const MAX_DECODE_DEPTH: usize = 1000;
 
     fn encode_int(n: i64, out: &mut Vec<u8>) {
         if n >= 0 {
@@ -1169,6 +1187,69 @@ mod cmsgpack {
         Ok(())
     }
 
+    enum Item {
+        Scalar(Value),
+        /// An array of this many elements follows.
+        Array(usize),
+        /// A map of this many pairs follows.
+        Map(usize),
+    }
+
+    #[derive(Clone, Copy)]
+    enum Kind {
+        Array,
+        Map,
+    }
+
+    /// An array or map whose elements are still being read.
+    struct Open {
+        table: Table,
+        kind: Kind,
+        /// Elements, or pairs, still to come.
+        left: usize,
+        /// Elements of an array stored so far.
+        filled: usize,
+        /// The key of the pair whose value comes next.
+        key: Option<Value>,
+    }
+
+    /// Stores a value that has been read where it belongs: in the innermost
+    /// array or map still open, closing each one this completes. Returns
+    /// the value itself once nothing is open any more.
+    fn place(open: &mut Vec<Open>, mut value: Value) -> Result<Option<Value>> {
+        loop {
+            let Some(innermost) = open.last_mut() else {
+                return Ok(Some(value));
+            };
+            match innermost.kind {
+                Kind::Array => {
+                    innermost.filled += 1;
+                    innermost.table.raw_seti(innermost.filled, value)?;
+                }
+                Kind::Map => match innermost.key.take() {
+                    None => {
+                        innermost.key = Some(value);
+                        return Ok(None);
+                    }
+                    Some(key) => {
+                        // A nil key cannot be stored in a table.
+                        if !key.is_nil() {
+                            innermost.table.raw_set(key, value)?;
+                        }
+                    }
+                },
+            }
+            innermost.left -= 1;
+            if innermost.left > 0 {
+                return Ok(None);
+            }
+            match open.pop() {
+                Some(done) => value = Value::Table(done.table),
+                None => return Ok(None),
+            }
+        }
+    }
+
     struct Reader<'a> {
         lua: &'a Lua,
         bytes: &'a [u8],
@@ -1204,33 +1285,55 @@ mod cmsgpack {
             Ok(Value::String(lua.create_string(bytes)?))
         }
 
-        fn array(&mut self, length: usize) -> Result<Value> {
-            let table = self.lua.create_table()?;
-            for index in 1..=length {
-                table.raw_seti(index, self.value()?)?;
-            }
-            Ok(Value::Table(table))
-        }
-
-        fn map(&mut self, length: usize) -> Result<Value> {
-            let table = self.lua.create_table()?;
-            for _ in 0..length {
-                let key = self.value()?;
-                let item = self.value()?;
-                // A nil key cannot be stored in a table.
-                if !key.is_nil() {
-                    table.raw_set(key, item)?;
-                }
-            }
-            Ok(Value::Table(table))
-        }
-
+        /// Reads one value. Nested arrays and maps are kept on a list of
+        /// their own instead of the thread's stack, so that how deep the
+        /// input goes (which is the script's to choose) cannot overflow it.
         fn value(&mut self) -> Result<Value> {
+            let mut open: Vec<Open> = Vec::new();
+            loop {
+                let (kind, length) = match self.item()? {
+                    Item::Scalar(value) => {
+                        if let Some(value) = place(&mut open, value)? {
+                            return Ok(value);
+                        }
+                        continue;
+                    }
+                    Item::Array(length) => (Kind::Array, length),
+                    Item::Map(length) => (Kind::Map, length),
+                };
+                if open.len() == MAX_DECODE_DEPTH {
+                    let function = match kind {
+                        Kind::Array => "mp_decode_to_lua_array",
+                        Kind::Map => "mp_decode_to_lua_hash",
+                    };
+                    return Err(LuaError::external(Unlocated(format!(
+                        "stack overflow (in function {function})"
+                    ))));
+                }
+                let table = self.lua.create_table()?;
+                if length == 0 {
+                    if let Some(value) = place(&mut open, Value::Table(table))? {
+                        return Ok(value);
+                    }
+                    continue;
+                }
+                open.push(Open {
+                    table,
+                    kind,
+                    left: length,
+                    filled: 0,
+                    key: None,
+                });
+            }
+        }
+
+        /// Reads one scalar, or the header of an array or a map.
+        fn item(&mut self) -> Result<Item> {
             let tag = self.take(1)?[0];
-            Ok(match tag {
+            let value = match tag {
                 0x00..=0x7F => Value::Integer(i64::from(tag)),
-                0x80..=0x8F => self.map(usize::from(tag & 0x0F))?,
-                0x90..=0x9F => self.array(usize::from(tag & 0x0F))?,
+                0x80..=0x8F => return Ok(Item::Map(usize::from(tag & 0x0F))),
+                0x90..=0x9F => return Ok(Item::Array(usize::from(tag & 0x0F))),
                 0xA0..=0xBF => self.string(usize::from(tag & 0x1F))?,
                 0xC0 => Value::Nil,
                 0xC2 => Value::Boolean(false),
@@ -1260,25 +1363,14 @@ mod cmsgpack {
                 0xD1 => Value::Integer(i64::from(self.unsigned(2)? as u16 as i16)),
                 0xD2 => Value::Integer(i64::from(self.unsigned(4)? as u32 as i32)),
                 0xD3 => whole(self.unsigned(8)? as i64 as f64),
-                0xDC => {
-                    let length = self.unsigned(2)? as usize;
-                    self.array(length)?
-                }
-                0xDD => {
-                    let length = self.unsigned(4)? as usize;
-                    self.array(length)?
-                }
-                0xDE => {
-                    let length = self.unsigned(2)? as usize;
-                    self.map(length)?
-                }
-                0xDF => {
-                    let length = self.unsigned(4)? as usize;
-                    self.map(length)?
-                }
+                0xDC => return Ok(Item::Array(self.unsigned(2)? as usize)),
+                0xDD => return Ok(Item::Array(self.unsigned(4)? as usize)),
+                0xDE => return Ok(Item::Map(self.unsigned(2)? as usize)),
+                0xDF => return Ok(Item::Map(self.unsigned(4)? as usize)),
                 0xE0..=0xFF => Value::Integer(i64::from(tag as i8)),
                 _ => return fail("Bad data format in input."),
-            })
+            };
+            Ok(Item::Scalar(value))
         }
     }
 
