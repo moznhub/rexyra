@@ -19,8 +19,8 @@ use std::time::Instant;
 
 use bytes::Bytes;
 use mlua::{
-    Error as LuaError, Function, HookTriggers, Lua, LuaOptions, StdLib, Table, Value, Variadic,
-    VmState,
+    ChunkMode, Error as LuaError, Function, HookTriggers, Lua, LuaOptions, StdLib, Table, Value,
+    Variadic, VmState,
 };
 use rexyra_engine::glob_match;
 use rexyra_resp::{format_double, Frame, Protocol};
@@ -95,8 +95,14 @@ fn killed_error() -> LuaError {
     })
 }
 
-/// Runs once in a new interpreter. It receives four functions implemented
-/// in Rust and returns the function used to run scripts.
+/// The reply to a script that is a precompiled chunk: what Redis's Lua, which
+/// has no loader for them, says of the escape character they start with.
+const BINARY_CHUNK: &str =
+    "ERR Error compiling script (new function): user_script:1: unexpected symbol near 'char(27)'";
+
+/// Runs once in a new interpreter. It receives functions implemented in
+/// Rust and returns the two functions used to run scripts and library
+/// functions, and the table scripts get as their globals.
 const BOOTSTRAP: &str = r#"
 local caught, handler, missing_global, readonly, clock, stop_if_killed = ...
 local rawpcall, rawxpcall = pcall, xpcall
@@ -120,21 +126,121 @@ xpcall = function(f, on_error)
   return rawxpcall(f, on_error)
 end
 
--- Not available to scripts.
+-- Not available to scripts. `getfenv`, `setfenv` and `newproxy` would be
+-- ways to reach or replace the tables protected below.
+local rawloadstring, rawsetfenv = loadstring, setfenv
 dofile = nil
 loadfile = nil
 print = nil
+getfenv = nil
+setfenv = nil
+newproxy = nil
 os = { clock = clock }
+
+-- One interpreter runs the scripts of every client, so nothing a script can
+-- reach may be changed by it: a function it replaced would later run with
+-- another caller's permissions. Redis marks the tables read-only inside its
+-- Lua; stock Lua cannot, so scripts are given a read-only view of each
+-- table instead: an empty table that reads through to the real one and
+-- refuses every write.
+local globals = _G
+local rawnext, rawpairs, rawrawget, rawrawset = next, pairs, rawget, rawset
+local rawgetmetatable, rawsetmetatable = getmetatable, setmetatable
+local byte, concat, type, error = string.byte, table.concat, type, error
+local READONLY = 'Attempt to modify a readonly table'
+-- The real table behind each view, and what `getmetatable` says of a view.
+local behind, metatable_of = {}, {}
+
+local function view_of(real)
+  local view = rawsetmetatable({}, {
+    __index = real, __newindex = readonly, __metatable = false,
+  })
+  behind[view] = real
+  return view
+end
+
+for _, name in ipairs({
+  'string', 'table', 'math', 'os', 'coroutine',
+  'bit', 'cjson', 'cmsgpack', 'struct', 'redis',
+}) do
+  globals[name] = view_of(globals[name])
+end
+-- Methods on strings keep finding the real `string` table; a script that
+-- asks for the metatable gets a view of it.
+rawgetmetatable('').__metatable = view_of({ __index = globals.string })
 
 -- Scripts may not create or read undefined globals, which catches typos and
 -- keeps one script from leaving state behind for the next.
-setmetatable(_G, { __index = missing_global, __newindex = readonly })
+local global_rules = { __index = missing_global, __newindex = readonly }
+local script_globals = view_of(globals)
+metatable_of[script_globals] = view_of(global_rules)
+
+-- The functions that go around metamethods treat a view as the table it
+-- stands for, and never hand out the table itself.
+local function view_next(t, key)
+  return rawnext(behind[t] or t, key)
+end
+next = view_next
+pairs = function(t)
+  if behind[t] then return view_next, t, nil end
+  return rawpairs(t)
+end
+rawget = function(t, key)
+  return rawrawget(behind[t] or t, key)
+end
+rawset = function(t, key, value)
+  if behind[t] then error(READONLY, 0) end
+  return rawrawset(t, key, value)
+end
+getmetatable = function(value)
+  if behind[value] then return metatable_of[value] end
+  return rawgetmetatable(value)
+end
+setmetatable = function(t, metatable)
+  if behind[t] then error(READONLY, 0) end
+  return rawsetmetatable(t, metatable)
+end
+
+-- Lua 5.1 runs precompiled chunks without verifying them, and a crafted one
+-- can corrupt memory, so only source text is compiled, as in Redis. Parsing
+-- an escape character as text gives the error Redis gives, with the chunk
+-- named the way Lua would name it. What is compiled gets the same view of
+-- the globals as the script that compiled it.
+local function compile(chunk, name, default_name)
+  if type(chunk) == 'string' and byte(chunk, 1) == 27 then
+    return rawloadstring(' \27', name or default_name or chunk)
+  end
+  local compiled, problem = rawloadstring(chunk, name or default_name)
+  if compiled then rawsetfenv(compiled, script_globals) end
+  return compiled, problem
+end
+loadstring = function(chunk, name)
+  return compile(chunk, name)
+end
+load = function(reader, name)
+  local pieces, count = {}, 0
+  while true do
+    local piece = reader()
+    if piece == nil or piece == '' then break end
+    local kind = type(piece)
+    if kind ~= 'string' and kind ~= 'number' then
+      return nil, 'reader function must return a string'
+    end
+    count = count + 1
+    pieces[count] = piece
+  end
+  return compile(concat(pieces), name, '=(load)')
+end
+
+globals._G = script_globals
+rawsetmetatable(globals, global_rules)
 
 -- Runs a script, and a library function with its keys and arguments.
 return function(script) return rawxpcall(script, handler) end,
   function(f, keys, args)
     return rawxpcall(function() return f(keys, args) end, handler)
-  end
+  end,
+  script_globals
 "#;
 
 /// A command failed inside `redis.call`. Carried through Lua as an error
@@ -279,6 +385,11 @@ pub struct Scripting {
     run: Function,
     /// Runs a library function under `pcall`, passing its keys and arguments.
     run_function: Function,
+    /// What scripts and loaded libraries see as their globals: a read-only
+    /// view of the real ones, set up by [`BOOTSTRAP`]. `KEYS`, `ARGV` and
+    /// the `redis` functions are still set on the real tables, which only
+    /// this side can reach.
+    script_globals: Table,
     scripts: HashMap<String, Script>,
     watchdog: Arc<Watchdog>,
     /// The metamethod that makes a table read-only; reused for each
@@ -407,17 +518,6 @@ impl Scripting {
         api.raw_set("REDIS_VERSION_NUM", (next() << 16) | (next() << 8) | next())?;
         lua.globals().raw_set("redis", api.clone())?;
         crate::lualibs::install(&lua)?;
-        // `rawset` would otherwise be a way around the ban on new globals.
-        lua.globals().raw_set(
-            "rawset",
-            lua.create_function(|lua, (table, key, value): (Table, Value, Value)| {
-                if table.to_pointer() == lua.globals().to_pointer() {
-                    return Err(LuaError::runtime("Attempt to modify a readonly table"));
-                }
-                table.raw_set(key, value)?;
-                Ok(table)
-            })?,
-        )?;
 
         let caught = lua.create_function(caught_error)?;
         let handler = lua.create_function(uncaught_error)?;
@@ -449,10 +549,10 @@ impl Scripting {
                 Ok(())
             }
         })?;
-        let (run, run_function) = lua
+        let (run, run_function, script_globals) = lua
             .load(BOOTSTRAP)
             .set_name("@bootstrap")
-            .call::<(Function, Function)>((
+            .call::<(Function, Function, Table)>((
                 caught,
                 handler,
                 missing_global.clone(),
@@ -488,6 +588,7 @@ impl Scripting {
             api,
             run,
             run_function,
+            script_globals,
             scripts: HashMap::new(),
             watchdog,
             readonly,
@@ -505,10 +606,17 @@ impl Scripting {
             return Ok(sha);
         }
         let (body, no_writes) = strip_shebang(source)?;
+        // A precompiled chunk starts with an escape character. Lua 5.1 does
+        // not verify bytecode, so it is never loaded: this is the error
+        // Redis gives, whose Lua parses everything as source text.
+        if body.first() == Some(&0x1B) {
+            return Err(Frame::error(BINARY_CHUNK));
+        }
         let function = self
             .lua
             .load(&body[..])
             .set_name(CHUNK_NAME)
+            .set_mode(ChunkMode::Text)
             .into_function()
             .map_err(|error| {
                 let text = match &error {
@@ -517,6 +625,9 @@ impl Scripting {
                 };
                 Frame::error(format!("ERR Error compiling script (new function): {text}"))
             })?;
+        function
+            .set_environment(self.script_globals.clone())
+            .map_err(|error| Frame::error(format!("ERR {error}")))?;
         self.scripts.insert(
             sha.clone(),
             Script {
@@ -1215,6 +1326,7 @@ impl Scripting {
             .lua
             .load(&body[..])
             .set_name(LIBRARY_CHUNK_NAME)
+            .set_mode(ChunkMode::Text)
             .into_function()
             .map_err(|error| {
                 let text = match &error {
@@ -1286,8 +1398,9 @@ impl Scripting {
             }
         }
 
-        // Loaded: from now on the library sees the full set of globals.
-        meta.raw_set("__index", self.lua.globals())
+        // Loaded: from now on the library sees the full set of globals,
+        // through the same read-only view scripts get.
+        meta.raw_set("__index", self.script_globals.clone())
             .map_err(lua_error)?;
         self.remove_library(&name);
         for function in &functions {
@@ -1969,6 +2082,252 @@ mod tests {
         );
         // The interpreter is fine afterwards.
         assert_eq!(eval(&mut h, "return 'ok'"), bulk("ok"));
+    }
+
+    /// The error of a script that failed on its first line.
+    fn script_error(script: &str, message: &str) -> Frame {
+        err(&format!(
+            "{message} script: {}, on @user_script:1.",
+            sha(script)
+        ))
+    }
+
+    #[test]
+    fn precompiled_chunks_are_refused() {
+        // Lua 5.1 does not verify bytecode, so loading a crafted chunk is a
+        // way to corrupt memory. Redis parses everything as source text.
+        let mut h = Harness::new();
+        assert_eq!(
+            eval(&mut h, "\u{1b}LuaQ"),
+            err("ERR Error compiling script (new function): user_script:1: unexpected symbol near 'char(27)'")
+        );
+        assert_eq!(
+            eval(
+                &mut h,
+                "local f, e = loadstring(string.dump(function() return 42 end)) \
+                 return {tostring(f), e}"
+            ),
+            Frame::Array(bulks(&[
+                "nil",
+                "[string \"\u{1b}LuaQ\"]:1: unexpected symbol near 'char(27)'"
+            ]))
+        );
+        assert_eq!(
+            eval(
+                &mut h,
+                "local code = string.dump(function() return 42 end) \
+                 local f, e = load(function() local c = code code = nil return c end) \
+                 return {tostring(f), e}"
+            ),
+            Frame::Array(bulks(&[
+                "nil",
+                "(load):1: unexpected symbol near 'char(27)'"
+            ]))
+        );
+        // Source text still loads, in one piece or several.
+        assert_eq!(eval(&mut h, "return loadstring('return 7')()"), int(7));
+        assert_eq!(
+            eval(
+                &mut h,
+                "local parts = {'return ', '4', '2'} local i = 0 \
+                 return load(function() i = i + 1 return parts[i] end)()"
+            ),
+            int(42)
+        );
+        assert_eq!(
+            eval(&mut h, "local f, e = loadstring('return 1 +') return e"),
+            bulk("[string \"return 1 +\"]:1: unexpected symbol near '<eof>'")
+        );
+    }
+
+    #[test]
+    fn a_script_cannot_change_what_later_scripts_see() {
+        // One interpreter serves every client, so anything a script could
+        // replace would run later with another caller's permissions.
+        let mut h = Harness::new();
+        let plant = "function() return 'planted' end";
+        for target in [
+            "string.upper",
+            "tostring",
+            "_G.tonumber",
+            "table.concat",
+            "math.floor",
+            "redis.call",
+            "redis.sha1hex",
+            "cjson.encode",
+            "cmsgpack.pack",
+            "struct.pack",
+            "bit.band",
+            "os.clock",
+            "coroutine.wrap",
+            "getmetatable('').__index.rep",
+            "getmetatable('').__index",
+            "getmetatable(_G).__index",
+            "KEYS",
+        ] {
+            let script = format!("{target} = {plant} return 1");
+            assert_eq!(
+                eval(&mut h, &script),
+                script_error(
+                    &script,
+                    "ERR user_script:1: Attempt to modify a readonly table"
+                ),
+                "{target}"
+            );
+        }
+        for script in [
+            "rawset(_G, 'type', 1) return 1",
+            "rawset(table, 'concat', 1) return 1",
+            "rawset(redis, 'call', 1) return 1",
+            "setmetatable(_G, {}) return 1",
+            "setmetatable(string, {}) return 1",
+        ] {
+            assert_eq!(
+                eval(&mut h, script),
+                script_error(script, "ERR Attempt to modify a readonly table"),
+                "{script}"
+            );
+        }
+        // Code compiled by a script is held to the same rules.
+        for script in [
+            "loadstring('tostring = 1')() return 1",
+            "loadstring('leak = 1')() return 1",
+            "local done = false \
+             load(function() if done then return nil end done = true return 'select = 1' end)() \
+             return 1",
+        ] {
+            assert!(
+                matches!(eval(&mut h, script), Frame::Error(text) if text.contains("Attempt to modify a readonly table")),
+                "{script}"
+            );
+        }
+        // The ways to reach the real table of globals are gone, as in Redis.
+        for name in ["getfenv", "setfenv", "newproxy"] {
+            let script = format!("return type({name})");
+            assert!(
+                matches!(eval(&mut h, &script), Frame::Error(text) if text.contains("nonexistent global")),
+                "{name}"
+            );
+        }
+
+        // Nothing was changed, and reading works as before.
+        assert_eq!(
+            eval(
+                &mut h,
+                "return {string.upper('a'), tostring(1), tostring(tonumber('2')), \
+                 table.concat({'a', 'b'}), ('a'):rep(2), tostring(('abc'):len()), \
+                 cjson.encode(1), type(1), redis.call('PING').ok, tostring(select('#', 1, 2))}"
+            ),
+            Frame::Array(bulks(&[
+                "A", "1", "2", "ab", "aa", "3", "1", "number", "PONG", "2"
+            ]))
+        );
+        assert_eq!(
+            eval(&mut h, "return type(nosuchvar)"),
+            script_error(
+                "return type(nosuchvar)",
+                "ERR user_script:1: Script attempted to access nonexistent global variable 'nosuchvar'"
+            )
+        );
+        assert_eq!(
+            eval(
+                &mut h,
+                "local names = {} for name in pairs(string) do names[#names + 1] = name end \
+                 table.sort(names) return table.concat(names, ' ')"
+            ),
+            bulk("byte char dump find format gfind gmatch gsub len lower match rep reverse sub upper")
+        );
+        assert_eq!(
+            eval(
+                &mut h,
+                "local seen = 0 for name in pairs(_G) do \
+                 if name == 'redis' or name == 'KEYS' or name == 'pcall' then seen = seen + 1 end \
+                 end return seen"
+            ),
+            int(3)
+        );
+        assert_eq!(
+            eval(
+                &mut h,
+                "return {type(rawget(string, 'upper')), type(rawget(_G, 'redis')), \
+                 type(next(math)), tostring(getmetatable(string)), tostring(_G._G == _G), \
+                 tostring(rawequal(_G.string, string))}"
+            ),
+            Frame::Array(bulks(&[
+                "function", "table", "string", "nil", "true", "true"
+            ]))
+        );
+        // A script's own tables are its own.
+        assert_eq!(
+            eval(
+                &mut h,
+                "local t = setmetatable({}, {__index = function() return 5 end}) \
+                 rawset(t, 'a', 1) t.b = 2 \
+                 return {t.a, t.b, t.c, type(getmetatable(t).__index)}"
+            ),
+            Frame::Array(vec![int(1), int(2), int(5), bulk("function")])
+        );
+        assert_eq!(
+            h.cmd(&["EVAL", "return {KEYS[1], ARGV[1]}", "1", "k", "a"]),
+            Frame::Array(bulks(&["k", "a"]))
+        );
+    }
+
+    #[test]
+    fn functions_cannot_change_what_scripts_see_either() {
+        let mut h = Harness::new();
+        let code = "#!lua name=lib\n\
+                    redis.register_function('plant', function() \
+                      string.upper = function() return 'planted' end return 1 end)\n\
+                    redis.register_function('plant_global', function() \
+                      _G.tostring = function() return 'planted' end return 1 end)";
+        assert_eq!(h.cmd(&["FUNCTION", "LOAD", code]), bulk("lib"));
+        for name in ["plant", "plant_global"] {
+            assert!(
+                matches!(h.cmd(&["FCALL", name, "0"]), Frame::Error(text) if text.contains("Attempt to modify a readonly table")),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            eval(&mut h, "return {string.upper('a'), tostring(1)}"),
+            Frame::Array(bulks(&["A", "1"]))
+        );
+    }
+
+    #[test]
+    fn unpacking_deeply_nested_messagepack_is_an_error() {
+        let mut h = Harness::new();
+        // 0x91 is an array of one element: a hundred of them around a 1.
+        assert_eq!(
+            eval(
+                &mut h,
+                "local t = cmsgpack.unpack(string.rep('\\145', 100) .. '\\1') local depth = 0 \
+                 while type(t) == 'table' do t = t[1] depth = depth + 1 end return depth"
+            ),
+            int(100)
+        );
+        assert_eq!(
+            eval(
+                &mut h,
+                "local ok, e = pcall(cmsgpack.unpack, string.rep('\\145', 200000)) \
+                 return {tostring(ok), e}"
+            ),
+            Frame::Array(bulks(&[
+                "false",
+                "stack overflow (in function mp_decode_to_lua_array)"
+            ]))
+        );
+        assert_eq!(
+            eval(
+                &mut h,
+                "local ok, e = pcall(cmsgpack.unpack, string.rep('\\129\\1', 200000)) \
+                 return {tostring(ok), e}"
+            ),
+            Frame::Array(bulks(&[
+                "false",
+                "stack overflow (in function mp_decode_to_lua_hash)"
+            ]))
+        );
     }
 
     #[test]

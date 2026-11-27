@@ -46,6 +46,15 @@ const OP_EXPIRE_SECONDS: u8 = 0xFD;
 const OP_SELECT_DB: u8 = 0xFE;
 const OP_EOF: u8 = 0xFF;
 
+/// The longest string a value may hold, Redis's `proto-max-bulk-len`. A
+/// compressed string that claims to expand to more is refused before any
+/// memory is set aside for it.
+const MAX_STRING_LEN: usize = 512 * 1024 * 1024;
+/// The most elements a collection has room reserved for before they are
+/// read. The count comes from the file or payload; past this the collection
+/// grows as its elements actually arrive.
+const MAX_RESERVED: usize = 1024;
+
 const TYPE_STRING: u8 = 0;
 const TYPE_LIST: u8 = 1;
 const TYPE_SET: u8 = 2;
@@ -735,6 +744,9 @@ impl<'a> Reader<'a> {
             Length::Lzf => {
                 let compressed = self.length()?;
                 let expanded = self.length()?;
+                if expanded > MAX_STRING_LEN {
+                    return Err(RdbError::Corrupt("compressed string too long"));
+                }
                 let data = self.take(compressed)?;
                 Bytes::from(
                     lzf::decompress(data, expanded)
@@ -781,7 +793,7 @@ impl<'a> Reader<'a> {
             TYPE_STRING => Value::String(self.string()?),
             TYPE_LIST => {
                 let count = self.count(1)?;
-                let mut list = VecDeque::with_capacity(count);
+                let mut list = VecDeque::with_capacity(count.min(MAX_RESERVED));
                 for _ in 0..count {
                     list.push_back(self.string()?);
                 }
@@ -813,7 +825,7 @@ impl<'a> Reader<'a> {
             TYPE_HASH_METADATA => {
                 let min = u64::from_le_bytes(self.array()?);
                 let count = self.count(3)?;
-                let mut fields = Vec::with_capacity(count);
+                let mut fields = Vec::with_capacity(count.min(MAX_RESERVED));
                 for _ in 0..count {
                     let ttl = self.length()? as u64;
                     let at = match ttl {
@@ -1239,6 +1251,26 @@ mod tests {
             assert!(restore_value(&damaged).is_err(), "{name}");
         }
         assert!(matches!(restore_value(b"short"), Err(RdbError::Truncated)));
+    }
+
+    #[test]
+    fn a_payload_cannot_ask_for_more_memory_than_it_holds() {
+        // A compressed string of one byte that claims to expand to 2^64 - 1.
+        let mut body = vec![TYPE_STRING, 0xC3, 0x01, 0x81];
+        body.extend_from_slice(&[0xFF; 8]);
+        body.push(b'A');
+        assert!(matches!(
+            restore_value(&seal(body, 11)),
+            Err(RdbError::Corrupt(_))
+        ));
+        // And one that claims more than a string may hold.
+        let mut body = vec![TYPE_STRING, 0xC3, 0x01, 0x81];
+        body.extend_from_slice(&(1u64 << 30).to_be_bytes());
+        body.push(b'A');
+        assert!(matches!(
+            restore_value(&seal(body, 11)),
+            Err(RdbError::Corrupt(_))
+        ));
     }
 
     fn ttl_hash() -> Hash {

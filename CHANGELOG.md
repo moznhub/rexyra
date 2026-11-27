@@ -4,6 +4,15 @@ All notable changes to Rexyra are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Security
+
+Four ways a client that may run scripts or `RESTORE` could take the server down or reach beyond its own permissions. All four need a connection that is already allowed to run the command, which with the default settings means a program on the same machine.
+
+- **Precompiled Lua chunks are no longer loaded.** `EVAL`, `loadstring` and `load` accepted Lua bytecode, which Lua 5.1 runs without verifying it; a crafted chunk can corrupt the interpreter's memory. They now compile source text only and answer bytecode with the error Redis gives (`unexpected symbol near 'char(27)'`).
+- **A script can no longer change what later scripts see.** One interpreter runs every client's scripts, and a script could replace a library function (`string.upper = ...`), a built-in (`tostring = ...`, `_G.tonumber = ...`), the metatable of strings or the metatable of the globals. The replacement then ran inside other clients' scripts, with their permissions. All of these now fail with `Attempt to modify a readonly table`, as in Redis 7, for scripts, functions and code they compile with `loadstring` or `load`; `getfenv`, `setfenv` and `newproxy` are gone, as in Redis. Compared with Redis 7.4 probe by probe; see [COMPATIBILITY.md](https://github.com/moznhub/rexyra/blob/main/docs/COMPATIBILITY.md) for the little that differs.
+- **`cmsgpack.unpack` of deeply nested input no longer crashes the server.** A long run of array or map headers overflowed the stack of the thread that runs commands. Nesting is now limited to 1,000 levels, with Redis's `stack overflow` error.
+- **A `RESTORE` or `FUNCTION RESTORE` payload can no longer crash the server.** A compressed string in the payload states the length it expands to, and that much memory was reserved before anything was checked: a 23-byte payload claiming 2^64 − 1 bytes stopped the process. The length is now checked against what the compressed bytes could expand to and against the 512 MB limit on strings, and a list or hash in a payload no longer has room reserved for more than 1,024 elements before they are read. The same applies to snapshot files.
+
 ## [1.0.0] - 2026-11-22
 
 The first stable release. From this version on, settings, data files, command-line options and the Windows service stay compatible within 1.x (see the [README](https://github.com/moznhub/rexyra/blob/main/README.md#versions-and-compatibility)). New in it: client-side caching, `COMMAND GETKEYSANDFLAGS` with Redis's key specifications, and fixes that bring `BGSAVE`, `BGREWRITEAOF` and `SUBSCRIBE` in line with Redis. Every client library tested, StackExchange.Redis, redis-py, Jedis, Lettuce and go-redis, now passes its full suite apart from streams, HyperLogLog and geospatial commands, which Rexyra does not have.
