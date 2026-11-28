@@ -4,6 +4,10 @@ All notable changes to Rexyra are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-11-28
+
+The zip download now comes with its configuration file, and that file lists every setting. Nothing changes for a server that is already set up: an existing `rexyra.conf` is left as it is.
+
 ### Added
 
 - The zip download includes `rexyra.conf`, a configuration file to start from, so that nobody has to create one: start the server with `rexyra-server.exe rexyra.conf`. Before, the file had to be made first with `--create-config`. (The installer already wrote one.)
@@ -137,7 +141,8 @@ The first public release: a Redis-compatible in-memory data server for Windows, 
 - Users created with `ACL SETUSER` are not saved across restarts; put them in the configuration file.
 - Everything known to differ from Redis is listed in [docs/COMPATIBILITY.md](https://github.com/moznhub/rexyra/blob/main/docs/COMPATIBILITY.md), and what is not done in [docs/ROADMAP.md](https://github.com/moznhub/rexyra/blob/main/docs/ROADMAP.md).
 
-[Unreleased]: https://github.com/moznhub/rexyra/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/moznhub/rexyra/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/moznhub/rexyra/releases/tag/v1.0.2
 [1.0.1]: https://github.com/moznhub/rexyra/releases/tag/v1.0.1
 [1.0.0]: https://github.com/moznhub/rexyra/releases/tag/v1.0.0
 [0.4.0]: https://github.com/moznhub/rexyra/releases/tag/v0.4.0
