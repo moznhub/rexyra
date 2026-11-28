@@ -648,7 +648,7 @@ mod cjson {
             Some(code)
         }
 
-        fn string(&mut self) -> Result<mlua::String> {
+        fn string(&mut self) -> Result<mlua::LuaString> {
             self.at += 1; // the opening quote
             let mut out = Vec::new();
             loop {
@@ -856,7 +856,7 @@ mod structs {
         }
     }
 
-    fn pack(lua: &Lua, args: Variadic<Value>) -> Result<mlua::String> {
+    fn pack(lua: &Lua, args: Variadic<Value>) -> Result<mlua::LuaString> {
         let Some(Value::String(format)) = args.first() else {
             return fail("bad argument #1 to 'pack' (string expected)");
         };
