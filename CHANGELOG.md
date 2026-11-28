@@ -4,6 +4,15 @@ All notable changes to Rexyra are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added
+
+- The zip download includes `rexyra.conf`, a configuration file to start from, so that nobody has to create one: start the server with `rexyra-server.exe rexyra.conf`. Before, the file had to be made first with `--create-config`. (The installer already wrote one.)
+
+### Changed
+
+- **The configuration file the server writes lists every setting.** The file from `--create-config`, which is also the one in the zip and the one the installer writes, used to hold a handful of settings. It now has all 31, grouped and each with a note on what it does: those given on the command line (and always the address, the port and the data folder) are set, and the rest are commented lines showing their defaults, ready to be uncommented and edited. Settings given to `--create-config` that it used to leave out, such as `--databases` or `--save`, are now written too. An existing `rexyra.conf` is not touched, by an upgrade or otherwise.
+- The guide to setting the zip download up as a Windows service by hand ([docs/WINDOWS-SERVICE.md](https://github.com/moznhub/rexyra/blob/main/docs/WINDOWS-SERVICE.md#by-hand)) is now a full step-by-step manual: unzipping, the folders, the configuration file, permissions, registering and starting the service, checking that it works, changing settings, upgrading and removing.
+
 ## [1.0.1] - 2026-11-27
 
 A security release: upgrade from 1.0.0. Data files, settings and the Windows service are unchanged. The one thing a working script could notice is that `getfenv`, `setfenv` and `newproxy` are gone, as they are in Redis.

@@ -49,11 +49,13 @@ Security fixes are made for the latest 1.x version; see [SECURITY.md](SECURITY.m
 
 **Install it as a service.** Download `rexyra-vX.Y.Z-windows-x86_64.msi` from the [releases page](https://github.com/moznhub/rexyra/releases) and run it. Setup asks for the folder and the port, then installs Rexyra as a Windows service that starts with the machine. See [Running as a Windows service](#running-as-a-windows-service).
 
-**Or just run it.** Download `rexyra-vX.Y.Z-windows-x86_64.zip` from the same page, unzip it and start the server in a terminal. It is one self-contained executable for 64-bit Windows 10 and 11; nothing else needs installing.
+**Or just run it.** Download `rexyra-vX.Y.Z-windows-x86_64.zip` from the same page, unzip it and start the server in a terminal, from the folder it unzipped to. It is one self-contained executable for 64-bit Windows 10 and 11; nothing else needs installing.
 
 ```powershell
-.\rexyra-server.exe --port 6379
+.\rexyra-server.exe rexyra.conf
 ```
+
+`rexyra.conf` comes in the zip, so there is nothing to create. It lists every setting there is: the port (6379), the address (this machine only) and the data folder (the one you start the server from) are set, and each of the others is a commented line showing its default with a note on what it does. To change one, remove the `#`, edit the value and start the server again; see [Configuration](#configuration). The server also runs without the file, on the same defaults. When you move to a newer version, keep your own `rexyra.conf` and replace only `rexyra-server.exe`.
 
 Neither download is code-signed, so Windows SmartScreen may ask for confirmation the first time. Each release lists SHA-256 checksums you can compare with `Get-FileHash`.
 
@@ -76,7 +78,7 @@ redis-cli -p 6379 get greeting
 
 ## Configuration
 
-Options are given on the command line, in a `redis.conf`-style file passed as the first argument, or both (the command line wins):
+Options are given on the command line, in a `redis.conf`-style file passed as the first argument, or both (the command line wins). The zip download has such a file, `rexyra.conf`, and the installer writes one to `C:\ProgramData\Rexyra`; both list every setting, the ones not in use as comments showing their defaults. `rexyra-server.exe --create-config rexyra.conf` writes a fresh one.
 
 ```powershell
 rexyra-server.exe rexyra.conf --port 7000
@@ -116,7 +118,7 @@ For a scripted install:
 msiexec /i rexyra-vX.Y.Z-windows-x86_64.msi /qn PORT=6380 INSTALLFOLDER="D:\Rexyra"
 ```
 
-**[docs/WINDOWS-SERVICE.md](docs/WINDOWS-SERVICE.md)** covers the rest: upgrading and removing, what is kept when the service stops, opening the port to other machines, and setting the service up by hand with `rexyra-server.exe --service`.
+**[docs/WINDOWS-SERVICE.md](docs/WINDOWS-SERVICE.md)** covers the rest: upgrading and removing, what is kept when the service stops, opening the port to other machines, and [setting the zip download up as a service by hand](docs/WINDOWS-SERVICE.md#by-hand), step by step.
 
 ## Supported commands
 
