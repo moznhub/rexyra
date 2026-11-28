@@ -484,89 +484,375 @@ impl Config {
     }
 
     /// The text of a configuration file that starts a server set up like
-    /// this one: the settings an installation chooses, written out, and the
-    /// ones worth knowing about as comments.
+    /// this one. It lists every setting there is ([`DIRECTIVES`]): the
+    /// address, port and data folder always, the others written out where
+    /// they differ from the default and otherwise as a comment showing the
+    /// default, so that whoever edits the file has all of them in front of
+    /// them.
     pub fn starter_file(&self) -> String {
-        let mut text = String::from(
-            "# Rexyra configuration.\n\
-             #\n\
-             # Restart the server (or the Rexyra service) after changing this file.\n\
-             # Every setting is described at https://github.com/moznhub/rexyra#configuration\n\
-             #\n\
-             # A path with spaces goes in single quotes: dir 'C:\\My Data\\rexyra'\n\
-             # Inside double quotes a backslash starts an escape, as in redis.conf.\n\
-             \n\
-             # The address and port to listen on. 127.0.0.1 accepts connections from\n\
-             # this machine only; 0.0.0.0 accepts them on every network interface.\n",
-        );
-        text.push_str(&format!(
-            "bind {}\nport {}\n",
-            quoted(&self.bind),
-            self.port
-        ));
-        text.push_str(
-            "\n\
-             # A password clients must give with AUTH. Without one, connections from\n\
-             # other machines are refused whatever 'bind' says.\n",
-        );
-        if self.requirepass.is_empty() {
-            text.push_str("# requirepass a-long-random-password\n");
-        } else {
-            text.push_str(&format!("requirepass {}\n", quoted(&self.requirepass)));
-        }
-        text.push_str("\n# The folder the data files are kept in.\n");
-        text.push_str(&format!("dir {}\n", quoted(&self.dir)));
-        text.push_str(
-            "\n# The file the log is written to. Without one it goes to standard error.\n",
-        );
-        if self.logfile.is_empty() {
-            text.push_str("# logfile rexyra.log\n");
-        } else {
-            text.push_str(&format!("logfile {}\n", quoted(&self.logfile)));
-        }
-        text.push_str(
-            "\n\
-             # When the log file reaches this size it is renamed rexyra.1.log (the one\n\
-             # before becomes rexyra.2.log, and so on) and a new one is started. This\n\
-             # many earlier files are kept. A size of 0 lets the file grow for ever.\n",
-        );
         let defaults = Config::default();
-        if (self.logfile_max_size, self.logfile_max_files)
-            == (defaults.logfile_max_size, defaults.logfile_max_files)
-        {
-            text.push_str("# logfile-max-size 100mb\n# logfile-max-files 5\n");
-        } else {
-            text.push_str(&format!(
-                "logfile-max-size {}\nlogfile-max-files {}\n",
-                self.logfile_max_size, self.logfile_max_files
-            ));
-        }
-        text.push_str(
-            "\n\
-             # Besides the snapshots, log every change to an append-only file, so that\n\
-             # a crash or a power cut loses at most about a second of changes.\n",
+        let yes_no = |flag: bool| if flag { "yes" } else { "no" }.to_owned();
+        let mut file = Starter {
+            text: String::from(
+                "# Rexyra configuration.\n\
+                 #\n\
+                 # Every setting is listed here. A line that starts with # is a comment:\n\
+                 # a setting left commented has the value shown, which is its default.\n\
+                 # To change one, remove the # and edit the value, then restart the server\n\
+                 # (or the Rexyra service). Settings changed while the server runs, with\n\
+                 # CONFIG SET, are written back to this file by CONFIG REWRITE.\n\
+                 #\n\
+                 # Sizes take a unit: 1kb is 1024 bytes, 1mb 1024 kb, 1gb 1024 mb.\n\
+                 # A path with spaces goes in single quotes: dir 'C:\\My Data\\rexyra'\n\
+                 # Inside double quotes a backslash starts an escape, as in redis.conf.\n\
+                 #\n\
+                 # More about each setting: https://github.com/moznhub/rexyra#configuration\n",
+            ),
+        };
+
+        file.section("Network");
+        file.about(
+            "The address and port to listen on. 127.0.0.1 accepts connections from\n\
+             this machine only; 0.0.0.0 accepts them on every network interface.",
         );
-        text.push_str(if self.aof.enabled {
-            "appendonly yes\n"
-        } else {
-            "# appendonly yes\n"
-        });
-        text.push_str(
-            "\n\
-             # A limit on the memory used for data, and what to remove when it is\n\
-             # reached. Without a limit the server takes what it is given.\n",
+        file.active("bind", &quoted(&self.bind));
+        file.active("port", &self.port.to_string());
+        file.about(
+            "While there is no password, refuse connections from other machines\n\
+             whatever 'bind' says.",
         );
-        if self.maxmemory == 0 {
-            text.push_str("# maxmemory 2gb\n# maxmemory-policy allkeys-lru\n");
+        file.setting(
+            "protected-mode",
+            &yes_no(self.protected_mode),
+            self.protected_mode == defaults.protected_mode,
+        );
+        file.about("The most clients connected at one time.");
+        file.setting(
+            "maxclients",
+            &self.maxclients.to_string(),
+            self.maxclients == defaults.maxclients,
+        );
+
+        file.section("Security");
+        file.about("A password clients must give with AUTH. Without one, anyone who can connect\nmay run any command.");
+        if self.requirepass.is_empty() {
+            file.example("requirepass", "a-long-random-password");
         } else {
-            text.push_str(&format!(
-                "maxmemory {}\nmaxmemory-policy {}\n",
-                self.maxmemory,
-                self.maxmemory_policy.name()
-            ));
+            file.active("requirepass", &quoted(&self.requirepass));
         }
-        text
+        file.about(
+            "Further users, each with a name and the rules ACL SETUSER takes. This one\n\
+             may only use the list commands, on keys that start with jobs:",
+        );
+        if self.users.is_empty() {
+            file.example("user", "worker on >another-long-password ~jobs:* +@list");
+        }
+        for user in &self.users {
+            let words: Vec<String> = user.iter().map(|word| quoted(word)).collect();
+            file.active("user", &words.join(" "));
+        }
+        file.about(
+            "Who may run the DEBUG command: no, yes, or local for clients on this\n\
+             machine only.",
+        );
+        file.setting(
+            "enable-debug-command",
+            self.enable_debug_command.name(),
+            self.enable_debug_command == defaults.enable_debug_command,
+        );
+
+        file.section("General");
+        file.about("The number of databases, which SELECT chooses between.");
+        file.setting(
+            "databases",
+            &self.databases.to_string(),
+            self.databases == defaults.databases,
+        );
+        file.about("The file the log is written to. Without one it goes to standard error.");
+        if self.logfile.is_empty() {
+            file.example("logfile", "rexyra.log");
+        } else {
+            file.active("logfile", &quoted(&self.logfile));
+        }
+        file.about(
+            "When the log file reaches this size it is renamed rexyra.1.log (the one\n\
+             before becomes rexyra.2.log, and so on) and a new one is started. This\n\
+             many earlier files are kept. A size of 0 lets the file grow for ever.",
+        );
+        file.setting(
+            "logfile-max-size",
+            &size(self.logfile_max_size),
+            self.logfile_max_size == defaults.logfile_max_size,
+        );
+        file.setting(
+            "logfile-max-files",
+            &self.logfile_max_files.to_string(),
+            self.logfile_max_files == defaults.logfile_max_files,
+        );
+
+        file.section("Snapshots");
+        file.about(
+            "The folder the data files are kept in, which must exist, and the name of\n\
+             the snapshot file in it.",
+        );
+        file.active("dir", &quoted(&self.dir));
+        file.setting(
+            "dbfilename",
+            &quoted(&self.dbfilename),
+            self.dbfilename == defaults.dbfilename,
+        );
+        file.about(
+            "Save a snapshot in the background after this many seconds if at least\n\
+             this many keys changed: pairs of seconds and changes. save \"\" never\n\
+             saves on its own.",
+        );
+        let save = if self.save_points.is_empty() {
+            "\"\"".to_owned()
+        } else {
+            rexyra_commands::persistence::format_save_points(&self.save_points)
+        };
+        file.setting("save", &save, self.save_points == defaults.save_points);
+
+        file.section("Append-only file");
+        file.about(
+            "Besides the snapshots, log every change to an append-only file, so that\n\
+             a crash or a power cut loses at most about a second of changes.",
+        );
+        file.setting(
+            "appendonly",
+            &yes_no(self.aof.enabled),
+            self.aof.enabled == defaults.aof.enabled,
+        );
+        file.about(
+            "When the log is forced to disk: always (before each reply), everysec, or\n\
+             no (when Windows gets round to it).",
+        );
+        file.setting(
+            "appendfsync",
+            self.aof.fsync.name(),
+            self.aof.fsync == defaults.aof.fsync,
+        );
+        file.about("The folder, inside 'dir', and the file name the log is kept under.");
+        file.setting(
+            "appenddirname",
+            &quoted(&self.aof.dirname),
+            self.aof.dirname == defaults.aof.dirname,
+        );
+        file.setting(
+            "appendfilename",
+            &quoted(&self.aof.filename),
+            self.aof.filename == defaults.aof.filename,
+        );
+        file.about(
+            "Rewrite the log, to make it short again, once it has grown by this\n\
+             percentage since the last rewrite and is at least this large. A\n\
+             percentage of 0 never rewrites on its own.",
+        );
+        file.setting(
+            "auto-aof-rewrite-percentage",
+            &self.aof.rewrite_percentage.to_string(),
+            self.aof.rewrite_percentage == defaults.aof.rewrite_percentage,
+        );
+        file.setting(
+            "auto-aof-rewrite-min-size",
+            &size(self.aof.rewrite_min_size),
+            self.aof.rewrite_min_size == defaults.aof.rewrite_min_size,
+        );
+        file.about(
+            "A log that ends in the middle of a command, as after a crash, is cut back\n\
+             to the last complete command at start-up. With no, the server refuses to\n\
+             start instead.",
+        );
+        file.setting(
+            "aof-load-truncated",
+            &yes_no(self.aof.load_truncated),
+            self.aof.load_truncated == defaults.aof.load_truncated,
+        );
+
+        file.section("Memory");
+        file.about(
+            "A limit on the memory used, for example 2gb, and what to remove when it\n\
+             is reached: noeviction (refuse writes), allkeys-lru, allkeys-lfu,\n\
+             allkeys-random, volatile-lru, volatile-lfu, volatile-random or\n\
+             volatile-ttl. 0 is no limit: the server takes what it is given.",
+        );
+        file.setting(
+            "maxmemory",
+            &size(self.maxmemory),
+            self.maxmemory == defaults.maxmemory,
+        );
+        file.setting(
+            "maxmemory-policy",
+            self.maxmemory_policy.name(),
+            self.maxmemory_policy == defaults.maxmemory_policy,
+        );
+        file.about(
+            "How many keys are looked at to pick one to remove (1 to 64): more is\n\
+             more exact and slower.",
+        );
+        file.setting(
+            "maxmemory-samples",
+            &self.maxmemory_samples.to_string(),
+            self.maxmemory_samples == defaults.maxmemory_samples,
+        );
+        file.about(
+            "For the lfu policies: how slowly a key's use counter grows, and after\n\
+             how many minutes without use it is lowered.",
+        );
+        file.setting(
+            "lfu-log-factor",
+            &self.lfu_log_factor.to_string(),
+            self.lfu_log_factor == defaults.lfu_log_factor,
+        );
+        file.setting(
+            "lfu-decay-time",
+            &self.lfu_decay_time.to_string(),
+            self.lfu_decay_time == defaults.lfu_decay_time,
+        );
+
+        file.section("Scripts and the slow log");
+        file.about(
+            "Milliseconds a script may run before other clients are answered BUSY and\n\
+             SCRIPT KILL can stop it; 0 is never. (Also read as lua-time-limit.)",
+        );
+        file.setting(
+            "busy-reply-threshold",
+            &self.busy_reply_threshold.to_string(),
+            self.busy_reply_threshold == defaults.busy_reply_threshold,
+        );
+        file.about(
+            "Commands that take longer than this many microseconds are recorded in the\n\
+             slow log (-1 records none, 0 all of them), which keeps this many.",
+        );
+        file.setting(
+            "slowlog-log-slower-than",
+            &self.slowlog_log_slower_than.to_string(),
+            self.slowlog_log_slower_than == defaults.slowlog_log_slower_than,
+        );
+        file.setting(
+            "slowlog-max-len",
+            &self.slowlog_max_len.to_string(),
+            self.slowlog_max_len == defaults.slowlog_max_len,
+        );
+
+        file.section("Notifications and client-side caching");
+        file.about(
+            "Which changes to keys are published to Pub/Sub channels, in Redis's\n\
+             letters: KEA for all of them, \"\" for none.",
+        );
+        let events = rexyra_commands::notify::format(self.notify_keyspace_events);
+        let events = if events.is_empty() {
+            "\"\"".to_owned()
+        } else {
+            events
+        };
+        file.setting(
+            "notify-keyspace-events",
+            &events,
+            self.notify_keyspace_events == defaults.notify_keyspace_events,
+        );
+        file.about(
+            "The most keys remembered for clients that cache (CLIENT TRACKING) before\n\
+             some are invalidated early; 0 is no limit.",
+        );
+        file.setting(
+            "tracking-table-max-keys",
+            &self.tracking_table_max_keys.to_string(),
+            self.tracking_table_max_keys == defaults.tracking_table_max_keys,
+        );
+        file.text
     }
+}
+
+/// Every setting a configuration file may hold, and so every one the
+/// starter file lists.
+pub const DIRECTIVES: &[&str] = &[
+    "bind",
+    "port",
+    "protected-mode",
+    "maxclients",
+    "requirepass",
+    "user",
+    "enable-debug-command",
+    "databases",
+    "logfile",
+    "logfile-max-size",
+    "logfile-max-files",
+    "dir",
+    "dbfilename",
+    "save",
+    "appendonly",
+    "appendfsync",
+    "appenddirname",
+    "appendfilename",
+    "auto-aof-rewrite-percentage",
+    "auto-aof-rewrite-min-size",
+    "aof-load-truncated",
+    "maxmemory",
+    "maxmemory-policy",
+    "maxmemory-samples",
+    "lfu-log-factor",
+    "lfu-decay-time",
+    "busy-reply-threshold",
+    "slowlog-log-slower-than",
+    "slowlog-max-len",
+    "notify-keyspace-events",
+    "tracking-table-max-keys",
+];
+
+/// The starter file as it is put together.
+struct Starter {
+    text: String,
+}
+
+impl Starter {
+    /// A heading for a group of settings.
+    fn section(&mut self, title: &str) {
+        self.text.push_str(&format!(
+            "\n\n# ---- {title} {}\n",
+            "-".repeat(66usize.saturating_sub(title.len()))
+        ));
+    }
+
+    /// A comment describing the settings that follow it.
+    fn about(&mut self, comment: &str) {
+        self.text.push('\n');
+        for line in comment.lines() {
+            self.text.push_str(&format!("# {line}\n"));
+        }
+    }
+
+    /// A setting that is always written out.
+    fn active(&mut self, name: &str, value: &str) {
+        self.text.push_str(&format!("{name} {value}\n"));
+    }
+
+    /// A setting: written out if it was changed, and as a comment showing
+    /// its value, the default, if not.
+    fn setting(&mut self, name: &str, value: &str, is_default: bool) {
+        if is_default {
+            self.example(name, value);
+        } else {
+            self.active(name, value);
+        }
+    }
+
+    /// A setting that is not set, with a value to show how it is written.
+    fn example(&mut self, name: &str, value: &str) {
+        self.text.push_str(&format!("# {name} {value}\n"));
+    }
+}
+
+/// A number of bytes with the largest unit that divides it, as the
+/// configuration file reads it back: `104857600` is `100mb`.
+fn size(bytes: u64) -> String {
+    const UNITS: [(u64, &str); 3] = [(1 << 30, "gb"), (1 << 20, "mb"), (1 << 10, "kb")];
+    for (unit, name) in UNITS {
+        if bytes != 0 && bytes.is_multiple_of(unit) {
+            return format!("{}{name}", bytes / unit);
+        }
+    }
+    bytes.to_string()
 }
 
 /// One value as a configuration file takes it, written the same way
@@ -647,7 +933,159 @@ mod tests {
             text.contains("\ndir C:\\ProgramData\\Rexyra\\data\n"),
             "{text}"
         );
-        assert!(text.contains("\n# appendonly yes\n"), "{text}");
+        assert!(text.contains("\n# appendonly no\n"), "{text}");
+    }
+
+    /// Every setting besides those the three cases above change.
+    #[test]
+    fn a_starter_file_keeps_every_setting_it_was_given() {
+        let config = Config {
+            databases: 4,
+            maxclients: 500,
+            slowlog_log_slower_than: -1,
+            slowlog_max_len: 64,
+            busy_reply_threshold: 0,
+            dbfilename: "data.rdb".to_owned(),
+            logfile_max_size: 1500,
+            save_points: Vec::new(),
+            save_given: true,
+            aof: AofSettings {
+                enabled: true,
+                dirname: "log dir".to_owned(),
+                filename: "changes.aof".to_owned(),
+                fsync: Fsync::Always,
+                rewrite_percentage: 0,
+                rewrite_min_size: 3 << 20,
+                load_truncated: false,
+            },
+            maxmemory: 1000,
+            maxmemory_policy: Policy::VolatileTtl,
+            maxmemory_samples: 10,
+            lfu_log_factor: 3,
+            lfu_decay_time: 0,
+            protected_mode: false,
+            enable_debug_command: rexyra_commands::DebugCommand::Local,
+            notify_keyspace_events: rexyra_commands::notify::parse(b"Kx").unwrap(),
+            tracking_table_max_keys: 0,
+            users: vec![
+                ["worker", "on", ">pass word", "~jobs:*", "+@list"]
+                    .map(str::to_owned)
+                    .to_vec(),
+                ["reader", "on", "nopass", "~*", "+@read"]
+                    .map(str::to_owned)
+                    .to_vec(),
+            ],
+            ..Config::default()
+        };
+        let text = config.starter_file();
+        let mut read = Config::default();
+        read.apply_file(&text)
+            .unwrap_or_else(|e| panic!("{e}\n{text}"));
+        assert_eq!(read, config, "{text}");
+        // Sizes keep a unit where one divides them, and "never save" is kept.
+        for line in [
+            "save \"\"",
+            "logfile-max-size 1500",
+            "auto-aof-rewrite-min-size 3mb",
+            "maxmemory 1000",
+        ] {
+            assert!(
+                text.lines().any(|found| found == line),
+                "{line}
+{text}"
+            );
+        }
+
+        let other = Config {
+            save_points: vec![(900, 1), (30, 5)],
+            save_given: true,
+            ..Config::default()
+        };
+        let mut read = Config::default();
+        read.apply_file(&other.starter_file()).unwrap();
+        assert_eq!(read, other);
+    }
+
+    /// The settings of a starter file, by name: whether each is written out
+    /// or commented, and its value.
+    fn listed(text: &str) -> Vec<(String, bool, String)> {
+        text.lines()
+            .filter_map(|line| {
+                let (active, rest) = match line.strip_prefix("# ") {
+                    Some(rest) => (false, rest),
+                    None => (true, line),
+                };
+                let (name, value) = rest.split_once(' ')?;
+                DIRECTIVES
+                    .contains(&name)
+                    .then(|| (name.to_owned(), active, value.to_owned()))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_starter_file_lists_every_setting() {
+        let text = Config::default().starter_file();
+        let listed = listed(&text);
+        let names: Vec<&str> = listed.iter().map(|(name, ..)| name.as_str()).collect();
+        // Each one once, in the order of the list, and nothing else that
+        // would read as a setting once uncommented.
+        assert_eq!(names, DIRECTIVES, "{text}");
+        // By default only where to listen and where the data goes are set.
+        let active: Vec<&str> = listed
+            .iter()
+            .filter(|(_, active, _)| *active)
+            .map(|(name, ..)| name.as_str())
+            .collect();
+        assert_eq!(active, ["bind", "port", "dir"], "{text}");
+        // No line is long, and every line is a comment, a setting or empty.
+        for line in text.lines() {
+            assert!(line.len() <= 80, "{line}");
+        }
+
+        // The server knows every setting on the list...
+        for name in DIRECTIVES {
+            let known = Config::default().apply(name, &["1".to_owned()]);
+            assert_ne!(known, Ok(false), "{name}");
+        }
+        // ...and each commented line gives the default: with every one of
+        // them uncommented, the file reads back as the defaults, apart from
+        // the three that have no default to show and show an example.
+        let uncommented: String = text
+            .lines()
+            .map(|line| match line.strip_prefix("# ") {
+                Some(rest)
+                    if rest
+                        .split_once(' ')
+                        .is_some_and(|(name, _)| DIRECTIVES.contains(&name)) =>
+                {
+                    format!("{rest}\n")
+                }
+                _ => format!("{line}\n"),
+            })
+            .collect();
+        let mut read = Config::default();
+        read.apply_file(&uncommented)
+            .unwrap_or_else(|e| panic!("{e}\n{uncommented}"));
+        assert_eq!(
+            read,
+            Config {
+                requirepass: "a-long-random-password".to_owned(),
+                logfile: "rexyra.log".to_owned(),
+                users: vec![[
+                    "worker",
+                    "on",
+                    ">another-long-password",
+                    "~jobs:*",
+                    "+@list"
+                ]
+                .map(str::to_owned)
+                .to_vec()],
+                save_given: true,
+                ..Config::default()
+            },
+            "{uncommented}"
+        );
     }
 
     fn cases_text() -> String {

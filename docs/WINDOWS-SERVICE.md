@@ -95,23 +95,45 @@ Rexyra does not support TLS yet. Passwords and data cross the network unencrypte
 
 ## By hand
 
-The same thing without the installer, for the zip download or a build of your own. `rexyra-server.exe --service` is what makes it work: with that option the program talks to the Windows service manager instead of a terminal. Open PowerShell **as administrator**; this example keeps everything in `C:\Rexyra`.
+How to turn the zip download (or a build of your own) into a Windows service yourself, without the installer. The result is the same: a service called **Rexyra** that starts with Windows, runs under the low-privilege `LocalService` account and saves its data when it is stopped.
 
-1. Make the folders and copy `rexyra-server.exe` into `C:\Rexyra`:
+What makes it work is `rexyra-server.exe --service`: with that option the program talks to the Windows service manager instead of a terminal.
+
+You need an **administrator** PowerShell for every step: right-click the Start button and choose **Terminal (Admin)**. The example keeps everything in `C:\Rexyra`; if you choose another folder, pick one without spaces in its name (see [the note at the end](#a-folder-with-spaces-in-its-name)).
+
+### Set it up
+
+1. **Unzip the download** and go to the folder it unzipped to, the one that holds `rexyra-server.exe`:
+
+   ```powershell
+   Expand-Archive rexyra-vX.Y.Z-windows-x86_64.zip -DestinationPath .
+   ```
+
+   ```powershell
+   cd rexyra-vX.Y.Z-windows-x86_64
+   ```
+
+2. **Make the folders** for the program, the data and the log, and copy the program in:
 
    ```powershell
    New-Item -ItemType Directory C:\Rexyra\data, C:\Rexyra\logs
    ```
 
-2. Write a configuration file to start from. This creates `rexyra.conf` with these settings and comments on the others, and leaves an existing file alone:
+   ```powershell
+   Copy-Item rexyra-server.exe C:\Rexyra\
+   ```
+
+   Copy only `rexyra-server.exe`. The `rexyra.conf` in the zip is for running the server in a terminal: it keeps the data in whatever folder the server is started from, and Windows starts a service in `C:\Windows\System32`. The next step writes the right one.
+
+3. **Write the configuration file.** This creates `C:\Rexyra\rexyra.conf` with the port, the data folder and the log file set, and every other setting listed as a comment. It leaves an existing file alone, so if a `rexyra.conf` is already there, delete it first or edit it by hand.
 
    ```powershell
    C:\Rexyra\rexyra-server.exe --create-config C:\Rexyra\rexyra.conf --port 6379 --dir C:\Rexyra\data --logfile C:\Rexyra\logs\rexyra.log
    ```
 
-   A service needs `dir` and `logfile` to be full paths, because Windows starts it in `C:\Windows\System32`.
+   Change `6379` if you want another port. `dir` and `logfile` must be full paths, for the reason given above.
 
-3. Let the service account write the data and the log:
+4. **Let the service account write the data and the log.** `LocalService` may read the program but, without this, not write beside it:
 
    ```powershell
    icacls C:\Rexyra\data /grant "NT AUTHORITY\LocalService:(OI)(CI)M"
@@ -121,23 +143,71 @@ The same thing without the installer, for the zip download or a build of your ow
    icacls C:\Rexyra\logs /grant "NT AUTHORITY\LocalService:(OI)(CI)M"
    ```
 
-4. Register the service and start it. The space after each `=` is required:
+5. **Register the service.** The space after each `=` is required:
 
    ```powershell
    sc.exe create Rexyra binPath= "C:\Rexyra\rexyra-server.exe --service C:\Rexyra\rexyra.conf" start= auto obj= "NT AUTHORITY\LocalService" DisplayName= "Rexyra"
    ```
 
+6. **Have Windows restart it after a crash**: after 5 seconds the first two times, then after a minute.
+
+   ```powershell
+   sc.exe failure Rexyra reset= 86400 actions= restart/5000/restart/5000/restart/60000
+   ```
+
+7. **Start it.**
+
    ```powershell
    sc.exe start Rexyra
    ```
 
-To have Windows restart it after a crash:
+### Check that it works
+
+The service should say `Running`:
 
 ```powershell
-sc.exe failure Rexyra reset= 86400 actions= restart/5000/restart/5000/restart/60000
+Get-Service Rexyra
 ```
 
-To remove it again:
+The port should be open:
+
+```powershell
+Test-NetConnection 127.0.0.1 -Port 6379
+```
+
+And any Redis client should get an answer, for example:
+
+```powershell
+redis-cli -p 6379 ping
+```
+
+If the service did not start, see [If the service does not start](#day-to-day) above; in this setup the log is `C:\Rexyra\logs\rexyra.log`, and a mistake in the configuration file is reported in `C:\Rexyra\rexyra-startup-error.txt`.
+
+### Afterwards
+
+Everything under [Day to day](#day-to-day), [What happens to the data when the service stops](#what-happens-to-the-data-when-the-service-stops) and [Other machines](#other-machines) applies, with `C:\Rexyra` in place of `C:\ProgramData\Rexyra`.
+
+**To change a setting**, edit `C:\Rexyra\rexyra.conf` and restart the service:
+
+```powershell
+Restart-Service Rexyra
+```
+
+**To move to a newer version**, stop the service, replace the program with the one from the new zip, and start it again. The configuration file and the data stay as they are.
+
+```powershell
+sc.exe stop Rexyra
+```
+
+```powershell
+Copy-Item rexyra-server.exe C:\Rexyra\ -Force
+```
+
+```powershell
+sc.exe start Rexyra
+```
+
+**To remove the service**, stop and delete it. The folder `C:\Rexyra`, with the settings, the data and the log, is left for you to keep or delete.
 
 ```powershell
 sc.exe stop Rexyra
@@ -146,5 +216,7 @@ sc.exe stop Rexyra
 ```powershell
 sc.exe delete Rexyra
 ```
+
+### A folder with spaces in its name
 
 If a folder name contains spaces, the path to the program inside `binPath=` needs quotes of its own, which is awkward to type in PowerShell; a folder without spaces avoids it.

@@ -61,19 +61,19 @@ function Wait-ForServer {
 }
 
 try {
-    # Step 1
+    # Step 2
     New-Item -ItemType Directory C:\Rexyra\data, C:\Rexyra\logs | Out-Null
     Copy-Item $Server C:\Rexyra\rexyra-server.exe
 
-    # Step 2
+    # Step 3
     C:\Rexyra\rexyra-server.exe --create-config C:\Rexyra\rexyra.conf --port $Port --dir C:\Rexyra\data --logfile C:\Rexyra\logs\rexyra.log
     Check 'the configuration file was written' ((Get-Content C:\Rexyra\rexyra.conf) -contains "port $Port")
 
-    # Step 3
+    # Step 4
     icacls C:\Rexyra\data /grant "NT AUTHORITY\LocalService:(OI)(CI)M" | Out-Null
     icacls C:\Rexyra\logs /grant "NT AUTHORITY\LocalService:(OI)(CI)M" | Out-Null
 
-    # Step 4
+    # Steps 5 and 7 (6, restarting after a crash, follows)
     sc.exe create Rexyra binPath= "C:\Rexyra\rexyra-server.exe --service C:\Rexyra\rexyra.conf" start= auto obj= "NT AUTHORITY\LocalService" DisplayName= "Rexyra"
     Check 'sc.exe create succeeded' ($LASTEXITCODE -eq 0) "exit code $LASTEXITCODE"
     sc.exe start Rexyra | Out-Null
